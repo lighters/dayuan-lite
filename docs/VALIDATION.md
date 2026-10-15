@@ -28,6 +28,12 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py -v
 
 直接验证进程通过 Python audit hook 拒绝读取 `.workbuddy` / `WorkBuddy.app` 路径、创建子进程，并将 HTTP 请求限制在 `www.workbuddy.cn` 与 `qyapi.weixin.qq.com`。这些限制没有拦截到依赖尝试。测试没有停止或卸载用户已有的桌面应用。
 
+## Grok Bot 消费端验收
+
+2026-10-15 使用 Grok Bot 0.71.2 的桌面主助手，通过其本机执行能力调用 CLI，提交一个新的有界企业微信群查询，再按相同 request_id 查询结果。独立检查本地回执与 Grok Bot 最终回复，任务 ID 和 `completed` 状态一致，摘要已返回 Bot 对话。
+
+此项验证由 Grok Bot 发起查询，没有以另一个客户端直接调用 A2A 代替消费端测试。实际使用的是本机 CLI；未保存私有技能、未添加长期 MCP 配置。未对 Grok Bot 进程施加前述直接验证进程的 audit hook，也不将两种验证范围混同。操作说明和通用 Prompt 见 [Bot 使用说明](BOT-USAGE.md)。
+
 ## 未证明的事项
 
 - 原始消息数量、逐字内容和完整性；结果是远端 Agent 生成的摘要。

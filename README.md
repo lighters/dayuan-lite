@@ -52,6 +52,14 @@ python3 dayuan.py read --json '{"request_id":"search-project-001","operation":"s
 
 查询可能先返回 `submitted` 或 `working`；随后用 `result` 查看结果。遇到 `outcome_unknown` 不要更换 ID 重发。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
 
+## 在 Grok Bot 中使用
+
+已验证的路径是 **Grok Bot 桌面主助手 → 用户 Mac 的本机执行能力 → Dayuan Lite CLI → 企业微信 A2A**。Grok Bot 的云端电脑和本机不是同一个环境；安装或配置 `grok` 命令行程序也不等于配置了 Grok Bot 桌面应用。
+
+先在本机完成上面的扫码登录，再把 Python、连接器和授权状态目录的绝对路径提供给 Bot。无需把凭据交给 Bot，也无需安装 WorkBuddy。完整步骤与可复制的只读查询 Prompt 见 **[Bot 使用说明与示例 Prompt](docs/BOT-USAGE.md)**。
+
+2026-10-15 已通过 Grok Bot 实际完成一次查询：本机回执与 Bot 最终回复中的任务 ID、`completed` 状态一致，摘要已返回对话。此次验收使用 CLI，没有注册长期 MCP 配置或保存私有技能。
+
 ## 接入 MCP
 
 复制 [mcp-config.example.json](mcp-config.example.json) 的内容到宿主配置，将其中的路径替换为实际绝对路径。Python 可执行文件必须是 3.9+；如果宿主无法解析 `python3`，使用它的绝对路径。
