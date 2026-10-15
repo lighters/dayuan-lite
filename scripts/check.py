@@ -14,6 +14,9 @@ FORBIDDEN_IMPORTS = {"http", "socket", "ssl", "subprocess", "multiprocessing", "
 HTTP_CALLS = {"urlopen", "build_opener", "OpenerDirector"}
 READ_OPERATIONS = ["search_groups", "read_chat", "search_messages"]
 TEST_COUNT = re.compile(r"\d+\s*(?:项|个)(?:离线)?(?:测试|用例)")
+# Wording rules from AGENTS.md; applies to every tracked text file except the rule sources themselves.
+FORBIDDEN_TERMS = {"大圆": "the product name is 大渊", "逆向": "describe what the project does, not how its interfaces were obtained", "反编译": "describe what the project does, not how its interfaces were obtained"}
+TERM_EXEMPT = {"AGENTS.md", "scripts/check.py"}
 
 problems = []
 
@@ -113,6 +116,17 @@ def check_docs():
                 report(path, number, "exact test count in docs goes stale on every change; describe coverage instead")
 
 
+def check_terms():
+    for path in sorted(ROOT.rglob("*")):
+        relative = path.relative_to(ROOT)
+        if not path.is_file() or path.suffix not in (".py", ".md", ".json", ".toml", ".yml") or relative.as_posix() in TERM_EXEMPT or any(part.startswith(".") and part != ".github" or part in ("build", "dist", "__pycache__") for part in relative.parts):
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            for term, reason in FORBIDDEN_TERMS.items():
+                if term in line:
+                    report(path, number, "'%s': %s" % (term, reason))
+
+
 def main():
     # sys.stdlib_module_names exists from Python 3.10; CI runs this check on a newer interpreter.
     stdlib = getattr(sys, "stdlib_module_names", None)
@@ -122,6 +136,7 @@ def main():
         check_python(path, stdlib)
     check_contract()
     check_docs()
+    check_terms()
     for line in problems:
         print(line)
     if problems:

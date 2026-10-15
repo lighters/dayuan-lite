@@ -38,7 +38,7 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py -v
 
 - 原始消息数量、逐字内容和完整性；结果是远端 Agent 生成的摘要。
 - 已用 `uv build` 构建 wheel，并在 Python 3.9.6 与 3.12 下通过 `uvx --from <wheel> dayuan` 运行 `--help`、`status` 和 MCP `initialize`；没有从 GitHub 地址实际执行 `pipx install` / `uvx --from git+...`，也没有用安装后的命令做真实登录和查询。
-- 0.3.0 新增的 `--wait` / `wait_seconds` 服务端等待只有离线测试，尚未对真实大圆任务联机验证。
+- 0.3.0 新增的 `--wait` / `wait_seconds` 服务端等待只有离线测试，尚未对真实大渊任务联机验证。
 - 跨天自然到期、企业撤销授权后重新授权的长期运行情况。
 - 所有企业、账号类型和 WorkBuddy 版本的通用可用性。
 - 上游强制执行只读权限；本地只提供查询模板和只读提示。

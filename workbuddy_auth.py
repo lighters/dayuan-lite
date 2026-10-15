@@ -21,8 +21,8 @@ from dayuan import DEFAULT_STATE, Error as StateError, __version__, load_private
 ORIGIN = 'https://www.workbuddy.cn'
 PREFIX = '/v2/plugin'
 WECOM_LOGIN = ORIGIN + '/login/wecom-auth'
-# Protocol compatibility with the analyzed desktop auth flow. The public page
-# hides WeCom login when platform=workbuddy has no version or a version < 5.8.0.
+# The official login page hides WeCom login when platform=workbuddy has no
+# version or a version < 5.8.0.
 AUTH_FLOW_VERSION = '5.8.2'
 
 
