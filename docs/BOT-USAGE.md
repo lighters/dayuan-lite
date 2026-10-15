@@ -6,12 +6,12 @@
 
 按照 [快速开始](../README.md#快速开始) 克隆仓库并完成企业微信扫码。首次登录由用户确认，后续普通查询按需自动续期。
 
-在连接器目录运行以下命令，确认解释器与目录位置：
+在连接器目录运行以下命令，确认解释器、目录位置和实际使用的状态目录（输出中的 `state_dir`）：
 
 ```bash
 command -v python3
 pwd -P
-python3 workbuddy_auth.py --state-dir "$PWD/.private" status
+python3 dayuan.py status
 ```
 
 准备三个绝对路径：
@@ -20,9 +20,9 @@ python3 workbuddy_auth.py --state-dir "$PWD/.private" status
 | --- | --- |
 | `<PYTHON>` | Python 3.9+ 可执行文件的绝对路径 |
 | `<REPO>` | 包含 `dayuan.py` 与 `workbuddy_auth.py` 的仓库目录 |
-| `<STATE>` | 实际完成授权的状态目录，例如仓库下的 `.private` |
+| `<STATE>` | 实际完成授权的状态目录，默认是 `~/.config/dayuan-lite` 展开后的绝对路径 |
 
-如果之前使用了自定义 `DAYUAN_STATE_DIR` 或 `--state-dir`，必须填那个目录。状态目录不必位于仓库内。命令中的 `--state-dir` 放在 `read`、`result`、`status` 等子命令之前。
+如果之前使用了自定义 `DAYUAN_STATE_DIR` 或 `--state-dir`，或仍在用 0.2.x 的仓库内 `.private`，必须填那个目录。`--state-dir` 写在子命令前后都可以。用 pipx 安装了 `dayuan` 命令时，下面的 `"<PYTHON>" "<REPO>/dayuan.py"` 可以换成 `dayuan` 命令的绝对路径。
 
 不要复制凭据到对话、私有技能或云端电脑；只提供路径。`status` 显示 `ready` 只是本地检查，实际读取成功才证明远端授权可用。
 
@@ -48,14 +48,12 @@ Grok Bot 的「你的电脑」与「Bot 的电脑」不同。Mac 上的路径不
 - 最多归纳 3 条，保留可获得的时间、发送者与来源信息；未知信息不要编造
 - 本次 request_id 固定为 bot-read-20261015-001
 
-先在本机执行一次：
-env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" read --json '{"request_id":"bot-read-20261015-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
+在本机执行一次（连接器会自己用同一 ID 等待最多 120 秒）：
+env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" read --wait 120 --json '{"request_id":"bot-read-20261015-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
 
-若状态是 submitted 或 working，约 5 秒后执行：
-env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" result bot-read-20261015-001
-
-继续用同一个 ID 查询结果，最多等待约 2 分钟；仍未完成就报告当前状态和该 ID，留待稍后继续查询。
-不得改 ID 重发，不得把 result 轮询替换为新的 read。
+若返回的状态仍是 submitted 或 working，报告当前状态和该 ID，留待稍后用
+env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" result --wait 120 bot-read-20261015-001
+继续查询。不得改 ID 重发，不得用新的 read 代替 result。
 若遇到 outcome_unknown、授权失败、权限拒绝、身份变化或其他错误，报告原始错误码并停止，不绕过。
 
 只读取，不发送、回复或转发任何消息，不标记已读，不创建文档或定时任务，不保存技能、记忆或配置。
@@ -79,7 +77,7 @@ env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" r
 | `read_chat` | `request_id`、`chat` | 读取指定会话，可附成对时间范围 |
 | `search_messages` | `request_id`、`chat`、`query` | 在指定会话内按关键词查询 |
 
-三种操作都需要 `operation` 字段，`limit` 为 1–50。搜索也是异步任务，同样用 `result REQUEST_ID` 恢复。`limit` 约束的是查询请求，不保证得到相同数量的原始消息。
+三种操作都需要 `operation` 字段，`limit` 为 1–50。搜索也是异步任务：加 `--wait N`（最多 300 秒）让连接器自己等待，或稍后用 `result --wait N REQUEST_ID` 恢复。`limit` 约束的是查询请求，不保证得到相同数量的原始消息。
 
 ## 5. 如何判断验收成功
 
@@ -95,6 +93,6 @@ env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" r
 
 ## 6. MCP 或长期复用
 
-支持 stdio MCP 的宿主可按 [MCP 接入说明](../README.md#接入-mcp) 配置 `dayuan_status`、`dayuan_read_start`、`dayuan_read_result`。MCP 进程必须在能访问授权状态目录的本机执行；不要为了云端宿主而复制凭据或公开暴露服务。
+支持 stdio MCP 的宿主可按 [MCP 接入说明](../README.md#接入-mcp) 配置 `dayuan_status`、`dayuan_read_start`、`dayuan_read_result`。两个读取工具支持 `wait_seconds`（最多 30 秒），服务端会按同一 ID 等待结果，`initialize` 也会把调用流程告诉宿主，Prompt 中无需再手写轮询步骤。MCP 进程必须在能访问授权状态目录的本机执行；不要为了云端宿主而复制凭据或公开暴露服务。
 
 私有技能、固定工具配置属于长期接入，应在用户明确选择后再保存。技能内容只需记录调用方法与边界，不保存凭据，也不要将一次验收的群名、时间或 request_id 固化为默认查询。本文示例不会执行这些持久化操作。

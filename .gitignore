@@ -12,3 +12,6 @@ credentials.json
 requests/
 mcp-config.json
 *.log
+build/
+dist/
+*.egg-info/
