@@ -41,16 +41,17 @@ python3 workbuddy_auth.py status
 替换示例群名、关键词和时间。`request_id` 在一次逻辑查询的重试中必须保持不变。
 
 ```bash
-python3 dayuan.py read --json '{"request_id":"find-project-001","operation":"search_groups","query":"项目讨论","limit":5}'
-python3 dayuan.py result find-project-001
+python3 dayuan.py read --wait 60 --json '{"request_id":"find-project-001","operation":"search_groups","query":"项目讨论","limit":5}'
 
-python3 dayuan.py read --json '{"request_id":"read-project-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
-python3 dayuan.py result read-project-001
+python3 dayuan.py read --wait 60 --json '{"request_id":"read-project-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
 
-python3 dayuan.py read --json '{"request_id":"search-project-001","operation":"search_messages","chat":"项目讨论群","query":"会议安排","limit":5}'
+python3 dayuan.py read --wait 60 --json '{"request_id":"search-project-001","operation":"search_messages","chat":"项目讨论群","query":"会议安排","limit":5}'
+
+# 等待结束仍未完成时，用同一 ID 继续等待
+python3 dayuan.py result --wait 60 read-project-001
 ```
 
-查询可能先返回 `submitted` 或 `working`；随后用 `result` 查看结果。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
+`--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
 
 ## 在 Grok Bot 中使用
 
@@ -73,8 +74,10 @@ python3 dayuan.py --state-dir "$DAYUAN_STATE_DIR" serve
 | 工具 | 功能 |
 | --- | --- |
 | `dayuan_status` | 本地状态，不发远端请求 |
-| `dayuan_read_start` | 提交有界查询，返回任务状态 |
-| `dayuan_read_result` | 按 `request_id` 查询已有任务 |
+| `dayuan_read_start` | 提交有界查询，返回任务状态；可选 `wait_seconds` |
+| `dayuan_read_result` | 按 `request_id` 查询已有任务，只读；可选 `wait_seconds` |
+
+两个读取工具都接受 `wait_seconds`（0–30，默认 0）：服务端在本次调用内按同一 `request_id` 轮询，Agent 不必自己循环。上限 30 秒是因为 stdio 服务一次只处理一个调用；仍未完成时用同一 ID 再调一次 `dayuan_read_result`。`initialize` 会返回 `instructions`，向宿主说明「提交 → 用同一 ID 查结果」的流程；`dayuan_status` 与 `dayuan_read_result` 标注了 `readOnlyHint: true`，`dayuan_read_start` 因会创建远端任务和本地回执而不标只读，但标注了 `idempotentHint: true`（同一 ID 只恢复原任务）。
 
 登录只在 CLI 中提供。MCP 通过标准输入输出通信，不监听 HTTP 端口。
 
@@ -115,7 +118,7 @@ python3 workbuddy_auth.py renew
 python3 -m unittest test_dayuan.py test_workbuddy_auth.py -v
 ```
 
-29 项离线测试覆盖查询约束、幂等提交、被拒请求重提、异常结果恢复、上游异常响应、并发续期、凭据轮换、稳定身份检查和 MCP 握手。测试不访问真实账号；当前仓库未启用 GitHub Actions。
+38 项离线测试覆盖查询约束、幂等提交、被拒请求重提、服务端有界等待、异常结果恢复、上游异常响应、并发续期、凭据轮换、稳定身份检查和 MCP 握手与工具声明。测试不访问真实账号；当前仓库未启用 GitHub Actions。
 
 2026-10-15 的原型已完成独立扫码、真实换票、A2A 查询、主动续期及新 MCP 进程恢复任务。自动续期也通过了联机验证：人为将本地缓存期限设为过期，再由普通读取触发真实云端续期。尚未观察跨天自然到期的长期运行。
 
