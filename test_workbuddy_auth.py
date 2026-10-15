@@ -1,5 +1,7 @@
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -89,6 +91,34 @@ class CloudAuthTests(unittest.TestCase):
         self.flow.ensure_wecom()
         self.flow.ensure_wecom()
         self.assertEqual(len(self.calls), 1)
+
+    def test_cache_hit_does_not_contend_for_renewal_lock(self):
+        self.ready()
+        self.responses = [{'access_token':'w1','expires_in':7200,'alias_id':'wu1','src_tid':'wc1'}]
+        self.flow.ensure_wecom()
+        with auth.CloudAuth(self.flow.state).locked():
+            self.assertEqual(self.flow.ensure_wecom()['access_token'], 'w1')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_renewal_waits_for_lock_then_reports_busy(self):
+        self.ready()
+        self.flow.LOCK_TIMEOUT = 0.3
+        with auth.CloudAuth(self.flow.state).locked():
+            with self.assertRaisesRegex(auth.AuthError, 'AUTH_BUSY'): self.flow.ensure_wecom()
+        self.assertEqual(self.calls, [])
+
+    def test_renewal_reuses_token_saved_while_waiting_for_lock(self):
+        self.ready()
+        holder = auth.CloudAuth(self.flow.state)
+        def renew_elsewhere():
+            with holder.locked():
+                time.sleep(0.3)
+                d = holder.load(); d['wecom'] = {'access_token':'w-other','identity':'i','expires_at_ms':9e15}; holder.save(d)
+        thread = threading.Thread(target=renew_elsewhere); thread.start()
+        time.sleep(0.1)
+        self.assertEqual(self.flow.ensure_wecom()['access_token'], 'w-other')
+        thread.join()
+        self.assertEqual(self.calls, [])
 
     def test_expired_account_renews_before_wecom_exchange(self):
         self.ready()

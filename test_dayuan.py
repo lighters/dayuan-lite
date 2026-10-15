@@ -53,6 +53,35 @@ class DayuanTests(unittest.TestCase):
             self.assertEqual(self.client.start(QUERY)["state"], "outcome_unknown")
             self.assertEqual(request.call_count, 1)
 
+    def test_definitively_rejected_submit_can_reuse_request_id(self):
+        with patch.object(self.client, "request", side_effect=[dayuan.Error("AUTH_REQUIRED", definitive=True), TASK, TASK]) as request:
+            first = self.client.start(QUERY)
+            self.assertEqual(first["state"], "rejected")
+            self.assertTrue(first["retry_safe"])
+            self.assertTrue(self.client.result(QUERY["request_id"])["retry_safe"])
+            second = self.client.start(QUERY)
+            self.assertEqual(second["task_id"], TASK["id"])
+            self.client.start(QUERY)
+            self.assertEqual([c.args[0] for c in request.call_args_list], ["POST", "POST", "GET"])
+        self.assertEqual(sorted(p.name for p in (self.root / "requests").iterdir()), ["test-query-001.json"])
+
+    def test_rejected_request_id_still_refuses_changed_query(self):
+        with patch.object(self.client, "request", side_effect=dayuan.Error("AUTH_REQUIRED", definitive=True)):
+            self.client.start(QUERY)
+        with self.assertRaisesRegex(dayuan.Error, "REQUEST_CONFLICT"):
+            self.client.start({**QUERY, "chat": "另一个群"})
+
+    def test_unexpected_upstream_shapes_do_not_crash(self):
+        for data in [{"task": {"id": "t", "status": "TASK_STATE_WORKING"}}, {"task": {"id": "t", "status": 2}}, {"task": "bad"},
+                     {"id": ["t"], "contextId": 1, "status": None, "artifacts": "x", "history": [None, "x", {"role": "agent", "parts": None}]},
+                     {"status": {"state": True, "message": "x"}, "message": None}, {"artifacts": [None, {"parts": "text"}]}]:
+            result = dayuan.normalize(data)
+            self.assertIsInstance(result["state"], str)
+            self.assertIsInstance(result["text"], str)
+            self.assertTrue(result["task_id"] is None or isinstance(result["task_id"], str))
+        self.assertEqual(dayuan.normalize({"task": {"id": "t", "status": "TASK_STATE_WORKING"}})["state"], "working")
+        self.assertEqual(dayuan.normalize({"status": {"state": 3}, "message": {"parts": [{"text": "ok"}]}})["text"], "ok")
+
     def test_changed_query_or_identity_cannot_resume_old_task(self):
         with patch.object(self.client, "request", return_value=TASK):
             self.client.start(QUERY)

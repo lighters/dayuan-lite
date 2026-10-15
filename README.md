@@ -50,7 +50,7 @@ python3 dayuan.py result read-project-001
 python3 dayuan.py read --json '{"request_id":"search-project-001","operation":"search_messages","chat":"项目讨论群","query":"会议安排","limit":5}'
 ```
 
-查询可能先返回 `submitted` 或 `working`；随后用 `result` 查看结果。遇到 `outcome_unknown` 不要更换 ID 重发。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
+查询可能先返回 `submitted` 或 `working`；随后用 `result` 查看结果。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
 
 ## 在 Grok Bot 中使用
 
@@ -96,7 +96,7 @@ python3 workbuddy_auth.py renew
 
 缺少 refresh token、长期授权到期或撤销时，需要重新授权。刷新请求结果不确定时，客户端会停止自动重放并报告 `REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED`；重新运行 `login` 恢复。不要把旧凭据文件覆盖回去。
 
-切换用户或企业应使用新的 `--state-dir`。并发刷新返回 `AUTH_BUSY` 时，等待另一个调用结束后再试。
+切换用户或企业应使用新的 `--state-dir`。未到期的凭据可并发读取；需要续期时，其他调用最多等待 30 秒，仍未结束才返回 `AUTH_BUSY`，此时稍后再试。
 
 ## 数据与权限
 
@@ -115,7 +115,7 @@ python3 workbuddy_auth.py renew
 python3 -m unittest test_dayuan.py test_workbuddy_auth.py -v
 ```
 
-23 项离线测试覆盖查询约束、幂等提交、异常结果恢复、凭据轮换、稳定身份检查和 MCP 握手。测试不访问真实账号；当前仓库未启用 GitHub Actions。
+29 项离线测试覆盖查询约束、幂等提交、被拒请求重提、异常结果恢复、上游异常响应、并发续期、凭据轮换、稳定身份检查和 MCP 握手。测试不访问真实账号；当前仓库未启用 GitHub Actions。
 
 2026-10-15 的原型已完成独立扫码、真实换票、A2A 查询、主动续期及新 MCP 进程恢复任务。自动续期也通过了联机验证：人为将本地缓存期限设为过期，再由普通读取触发真实云端续期。尚未观察跨天自然到期的长期运行。
 
