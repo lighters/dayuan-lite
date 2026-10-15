@@ -135,6 +135,99 @@ class DayuanTests(unittest.TestCase):
             self.assertTrue(body["configuration"]["returnImmediately"])
             self.assertEqual(body["configuration"]["historyLength"], 0)
 
+    def fake_clock(self):
+        clock = {"now": 0.0}
+        self.client.clock = lambda: clock["now"]
+        self.client.sleep = lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
+        return clock
+
+    def test_read_waits_on_same_request_id_until_terminal(self):
+        self.fake_clock()
+        working = {**TASK, "status": {"state": "TASK_STATE_WORKING"}, "history": []}
+        with patch.object(self.client, "request", side_effect=[working, working, TASK]) as request:
+            result = self.client.read(QUERY, 30)
+            self.assertEqual(result["state"], "completed")
+            self.assertEqual(result["text"], "测试摘要")
+            self.assertEqual([c.args[0] for c in request.call_args_list], ["POST", "GET", "GET"])
+            self.assertTrue(all(c.args[1] == "/tasks/task_test_1?historyLength=0" for c in request.call_args_list[1:]))
+
+    def test_wait_is_bounded_and_reports_pending_state(self):
+        clock = self.fake_clock()
+        working = {**TASK, "status": {"state": "TASK_STATE_WORKING"}, "history": []}
+        with patch.object(self.client, "request", return_value=working) as request:
+            result = self.client.read(QUERY, 10)
+        self.assertEqual(result["state"], "working")
+        self.assertIn("next_action", result)
+        self.assertLessEqual(clock["now"], 10)
+        self.assertEqual(request.call_args_list[0].args[0], "POST")
+        self.assertEqual({c.args[0] for c in request.call_args_list[1:]}, {"GET"})
+        with patch.object(self.client, "request", return_value=working) as request:
+            self.assertEqual(self.client.read(QUERY, 0)["state"], "working")
+            self.assertEqual(request.call_count, 1)
+
+    def test_poll_failure_keeps_task_instead_of_resubmitting(self):
+        self.fake_clock()
+        working = {**TASK, "status": {"state": "TASK_STATE_WORKING"}, "history": []}
+        with patch.object(self.client, "request", side_effect=[working, dayuan.Error("TRANSPORT_UNCERTAIN")]) as request:
+            result = self.client.read(QUERY, 30)
+        self.assertEqual(result["state"], "working")
+        self.assertEqual(result["task_id"], TASK["id"])
+        self.assertEqual(result["poll_error"], "TRANSPORT_UNCERTAIN")
+        self.assertEqual(request.call_count, 2)
+
+    def test_rejected_submit_is_returned_without_waiting(self):
+        clock = self.fake_clock()
+        with patch.object(self.client, "request", side_effect=dayuan.Error("AUTH_REQUIRED", definitive=True)):
+            self.assertEqual(self.client.read(QUERY, 30)["state"], "rejected")
+        self.assertEqual(clock["now"], 0)
+
+    def test_wait_seconds_is_validated(self):
+        for value in [-1, 31, True, 1.5, "5", None]:
+            with self.assertRaisesRegex(dayuan.Error, "INVALID_WAIT_SECONDS"):
+                dayuan.wait_seconds(value, dayuan.MCP_MAX_WAIT)
+        self.assertEqual(dayuan.wait_seconds(30, dayuan.MCP_MAX_WAIT), 30)
+
+    def test_cli_wait_limit_is_checked_before_submit(self):
+        proc = subprocess.run([sys.executable, str(Path(dayuan.__file__)), "--state-dir", str(self.root), "read", "--wait", "301", "--json", json.dumps(QUERY)], text=True, capture_output=True, env={**os.environ, "DAYUAN_ACCESS_TOKEN": "test-private-token"}, timeout=5)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(json.loads(proc.stdout)["error"], "INVALID_WAIT_SECONDS")
+        self.assertFalse((self.root / "requests").exists())
+
+    def rpc(self, *messages):
+        inp = "\n".join(json.dumps(v) for v in messages) + "\n"
+        proc = subprocess.run([sys.executable, str(Path(dayuan.__file__)), "--state-dir", str(self.root), "serve"], input=inp, text=True, capture_output=True, env={**os.environ, "DAYUAN_ACCESS_TOKEN": "test-private-token"}, timeout=5)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return [json.loads(x) for x in proc.stdout.splitlines()]
+
+    def test_mcp_advertises_flow_wait_and_read_only_hints(self):
+        init, tools = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        self.assertIn("request_id", init["result"]["instructions"])
+        self.assertIn("dayuan_read_result", init["result"]["instructions"])
+        by_name = {t["name"]: t for t in tools["result"]["tools"]}
+        self.assertTrue(by_name["dayuan_status"]["annotations"]["readOnlyHint"])
+        self.assertTrue(by_name["dayuan_read_result"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["dayuan_read_start"]["annotations"]["readOnlyHint"])
+        for name in ("dayuan_read_start", "dayuan_read_result"):
+            self.assertEqual(by_name[name]["inputSchema"]["properties"]["wait_seconds"]["maximum"], 30)
+        self.assertNotIn("wait_seconds", dayuan.QUERY_SCHEMA["properties"])
+
+    def test_mcp_rejects_wait_above_limit_before_network(self):
+        (reply,) = self.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "dayuan_read_start", "arguments": {**QUERY, "wait_seconds": 31}}})
+        self.assertTrue(reply["result"]["isError"])
+        self.assertEqual(reply["result"]["content"][0]["text"], "INVALID_WAIT_SECONDS")
+        self.assertFalse((self.root / "requests").exists())
+
+    def test_mcp_wait_passes_through_to_client(self):
+        with patch.object(dayuan.Client, "read", return_value={"request_id": "x", "state": "completed"}) as read, \
+             patch.object(dayuan.Client, "read_result", return_value={"request_id": "x", "state": "working"}) as read_result, \
+             patch("sys.stdin", io.StringIO(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "dayuan_read_start", "arguments": {**QUERY, "wait_seconds": 20}}}) + "\n" +
+                                           json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "dayuan_read_result", "arguments": {"request_id": QUERY["request_id"]}}}) + "\n")), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            dayuan.serve(self.root)
+        self.assertEqual(read.call_args.args, (QUERY, 20))
+        self.assertEqual(read_result.call_args.args, (QUERY["request_id"], 0))
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
     def test_stdio_handshake_has_no_workbuddy_dependency(self):
         inp = '\n'.join(json.dumps(v) for v in [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}}, {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "dayuan_status", "arguments": {}}}]) + '\n'
         proc = subprocess.run([sys.executable, str(Path(dayuan.__file__)), "--state-dir", str(self.root), "serve"], input=inp, text=True, capture_output=True, env={**os.environ, "DAYUAN_ACCESS_TOKEN": "test-private-token"}, timeout=5)
