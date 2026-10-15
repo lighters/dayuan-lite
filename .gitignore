@@ -1,0 +1,14 @@
+.private*/
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.DS_Store
+cloud-auth.json
+credentials.json
+.auth.lock
+requests/
+mcp-config.json
+*.log

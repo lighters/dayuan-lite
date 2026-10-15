@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dayuan-lite": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/dayuan-lite/dayuan.py",
+        "--state-dir",
+        "/absolute/path/to/dayuan-lite/.private",
+        "serve"
+      ]
+    }
+  }
+}
