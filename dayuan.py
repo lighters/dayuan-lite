@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+__version__ = "0.3.0"
 BASE = "https://qyapi.weixin.qq.com/cgi-bin/a2a/api"
 def config_home():
     xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -364,7 +365,7 @@ def serve(state):
             if method == "initialize":
                 versions = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
                 version = params.get("protocolVersion")
-                result = {"protocolVersion": version if version in versions else versions[-1], "capabilities": {"tools": {}}, "serverInfo": {"name": "dayuan-lite", "version": "0.3.0"}, "instructions": INSTRUCTIONS}
+                result = {"protocolVersion": version if version in versions else versions[-1], "capabilities": {"tools": {}}, "serverInfo": {"name": "dayuan-lite", "version": __version__}, "instructions": INSTRUCTIONS}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":

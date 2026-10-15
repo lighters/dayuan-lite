@@ -319,6 +319,8 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(project["project"]["dependencies"], [])
         self.assertEqual(project["project"]["requires-python"], ">=3.9")
         self.assertEqual(sorted(project["tool"]["setuptools"]["py-modules"]), ["dayuan", "workbuddy_auth"])
+        self.assertNotIn("version", project["project"])
+        self.assertEqual(project["tool"]["setuptools"]["dynamic"]["version"], {"attr": "dayuan.__version__"})
 
 
 if __name__ == "__main__":
