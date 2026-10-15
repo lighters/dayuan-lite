@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from dayuan import DEFAULT_STATE, Error as StateError, load_private, private_dir, save_private
+from dayuan import DEFAULT_STATE, Error as StateError, load_private, private_dir, resolve_state, save_private, warn_migration
 
 ORIGIN = 'https://www.workbuddy.cn'
 PREFIX = '/v2/plugin'
@@ -265,32 +265,41 @@ class CloudAuth:
             return cred
 
 
-def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--state-dir',type=Path,default=Path(os.environ.get('DAYUAN_STATE_DIR',DEFAULT_STATE)))
-    parser.add_argument('command',choices=['login','finish','renew','status','wecom-login'])
-    parser.add_argument('--open',action='store_true',help='Open the official authorization page in the system browser')
-    parser.add_argument('--wait',type=int,default=0,help='Poll login for at most 300 seconds')
-    args=parser.parse_args()
-    flow=CloudAuth(args.state_dir)
+def run(command, state, open_browser=False, wait=0):
+    """Shared by `dayuan <command>` and the legacy `workbuddy_auth.py <command>`. Returns the exit status."""
+    flow=CloudAuth(state)
     try:
-        if args.command=='status': value=flow.status()
-        elif args.command=='wecom-login': value={'authorization_url':WECOM_LOGIN,'instruction':'在完成账号登录的同一浏览器中，授权同一企业微信账号。之后运行 renew。'}
-        elif args.command=='login': value=flow.start()
-        elif args.command=='renew':
+        if command=='status': value=flow.status()
+        elif command=='wecom-login': value={'authorization_url':WECOM_LOGIN,'instruction':'在完成账号登录的同一浏览器中，授权同一企业微信账号。之后运行 renew。'}
+        elif command=='login': value=flow.start()
+        elif command=='renew':
             flow.ensure_wecom(force=True,refresh_account=True); value=flow.status()
         else: value=flow.finish()
-        if args.open and value.get('authorization_url'): webbrowser.open(value['authorization_url'])
+        if open_browser and value.get('authorization_url'): webbrowser.open(value['authorization_url'])
         print(json.dumps(value,ensure_ascii=False),flush=True)
-        if args.command in ('login','finish') and args.wait:
-            end=time.monotonic()+min(max(args.wait,0),300)
+        if command in ('login','finish') and wait:
+            end=time.monotonic()+min(max(wait,0),300)
             while value.get('phase')!='ready' and time.monotonic()<end:
                 time.sleep(2); value=flow.finish()
             if value.get('phase')=='ready':
                 flow.ensure_wecom(); value=flow.status()
             print(json.dumps(value,ensure_ascii=False),flush=True)
     except (AuthError,StateError,OSError,ValueError) as exc:
-        print(json.dumps({'error':str(exc) if isinstance(exc,AuthError) else 'LOCAL_STATE_ERROR'},ensure_ascii=False)); sys.exit(1)
+        print(json.dumps({'error':str(exc) if isinstance(exc,AuthError) else 'LOCAL_STATE_ERROR'},ensure_ascii=False)); return 1
+    return 0
+
+
+def main(argv=None):
+    """Compatibility wrapper; the unified entry point is `dayuan login|finish|renew|status|wecom-login`."""
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--state-dir',type=Path,default=None)
+    parser.add_argument('command',choices=['login','finish','renew','status','wecom-login'])
+    parser.add_argument('--open',action='store_true',help='Open the official authorization page in the system browser')
+    parser.add_argument('--wait',type=int,default=0,help='Poll login for at most 300 seconds')
+    args=parser.parse_args(argv)
+    state,explicit=resolve_state(args.state_dir)
+    warn_migration(state,explicit)
+    sys.exit(run(args.command,state,args.open,args.wait))
 
 
 if __name__=='__main__': main()

@@ -238,5 +238,88 @@ class DayuanTests(unittest.TestCase):
         self.assertNotIn("test-private-token", proc.stdout + proc.stderr)
 
 
+
+class EntryPointTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.env = {k: v for k, v in os.environ.items() if k not in ("DAYUAN_STATE_DIR", "DAYUAN_ACCESS_TOKEN", "XDG_CONFIG_HOME")}
+        self.env["HOME"] = str(self.root / "home")
+
+    def cli(self, *argv, env=None, script="dayuan.py"):
+        proc = subprocess.run([sys.executable, str(Path(dayuan.__file__).with_name(script)), *argv], text=True, capture_output=True, env=env or self.env, timeout=5)
+        # status/read print one indented document; auth commands print one JSON line per step.
+        out = proc.stdout.strip()
+        return proc, json.loads(out if out.startswith("{\n") else out.splitlines()[-1])
+
+    def test_default_state_dir_is_per_user_config(self):
+        proc, value = self.cli("status")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(value["state_dir"], str(self.root / "home/.config/dayuan-lite"))
+        proc, value = self.cli("status", env={**self.env, "XDG_CONFIG_HOME": str(self.root / "xdg")})
+        self.assertEqual(value["state_dir"], str(self.root / "xdg/dayuan-lite"))
+        proc, value = self.cli("status", env={**self.env, "XDG_CONFIG_HOME": "relative/ignored"})
+        self.assertEqual(value["state_dir"], str(self.root / "home/.config/dayuan-lite"))
+        self.assertFalse((self.root / "home/.config/dayuan-lite").exists())
+
+    def test_state_dir_overrides_before_or_after_command(self):
+        env_dir, arg_dir = self.root / "env-state", self.root / "arg-state"
+        self.assertEqual(self.cli("status", env={**self.env, "DAYUAN_STATE_DIR": str(env_dir)})[1]["state_dir"], str(env_dir))
+        for argv in (["--state-dir", str(arg_dir), "status"], ["status", "--state-dir", str(arg_dir)]):
+            self.assertEqual(self.cli(*argv, env={**self.env, "DAYUAN_STATE_DIR": str(env_dir)})[1]["state_dir"], str(arg_dir))
+
+    def test_unified_entry_dispatches_auth_commands(self):
+        with patch("workbuddy_auth.run", return_value=0) as run:
+            for argv, call in [(["login", "--open", "--wait", "300"], ("login", True, 300)), (["--state-dir", str(self.root), "finish"], ("finish", False, 0)),
+                               (["renew", "--state-dir", str(self.root)], ("renew", False, 0)), (["wecom-login"], ("wecom-login", False, 0))]:
+                with patch.dict(os.environ, {"DAYUAN_STATE_DIR": str(self.root)}), self.assertRaises(SystemExit) as stop:
+                    dayuan.main(argv)
+                self.assertEqual(stop.exception.code, 0)
+                self.assertEqual(run.call_args.args, (call[0], self.root, call[1], call[2]))
+        proc, value = self.cli("wecom-login", "--state-dir", str(self.root))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(value["authorization_url"].startswith("https://www.workbuddy.cn/"))
+
+    def test_legacy_auth_script_still_works(self):
+        for script_args in (["status", "--state-dir", str(self.root)], ["--state-dir", str(self.root), "status"]):
+            proc, value = self.cli(*script_args, script="workbuddy_auth.py")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(value["phase"], "logged_out")
+        self.assertEqual(self.cli("status", "--state-dir", str(self.root))[1]["configured"], False)
+
+    def test_legacy_state_is_detected_but_never_moved(self):
+        legacy, default = self.root / "repo/.private", self.root / "home/.config/dayuan-lite"
+        dayuan.private_dir(legacy)
+        dayuan.save_private(legacy / "cloud-auth.json", {"phase": "ready"})
+        with patch.object(dayuan, "LEGACY_STATE", legacy), patch.object(dayuan, "DEFAULT_STATE", default), patch.dict(os.environ, self.env, clear=True):
+            self.assertIsNotNone(dayuan.migration_hint(default, False))
+            self.assertIsNone(dayuan.migration_hint(default, True))
+            with patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO) as err:
+                dayuan.main(["status"])
+            value = json.loads(out.getvalue())
+            self.assertEqual(value["migration_hint"]["legacy_state_dir"], str(legacy))
+            self.assertIn(str(legacy), err.getvalue())
+            with patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO) as err:
+                dayuan.main(["--state-dir", str(legacy), "status"])
+            self.assertNotIn("migration_hint", json.loads(out.getvalue()))
+            self.assertEqual(err.getvalue(), "")
+            dayuan.save_private(default / "credentials.json", {"access_token": "x"})
+            self.assertIsNone(dayuan.migration_hint(default, False))
+        self.assertTrue((legacy / "cloud-auth.json").exists())
+        self.assertEqual(sorted(p.name for p in default.iterdir()), ["credentials.json"])
+
+    def test_pyproject_declares_stdlib_only_console_script(self):
+        try:
+            import tomllib
+        except ImportError:
+            self.skipTest("tomllib requires Python 3.11+")
+        project = tomllib.loads(Path(dayuan.__file__).with_name("pyproject.toml").read_text())
+        self.assertEqual(project["project"]["scripts"], {"dayuan": "dayuan:main"})
+        self.assertEqual(project["project"]["dependencies"], [])
+        self.assertEqual(project["project"]["requires-python"], ">=3.9")
+        self.assertEqual(sorted(project["tool"]["setuptools"]["py-modules"]), ["dayuan", "workbuddy_auth"])
+
+
 if __name__ == "__main__":
     unittest.main()

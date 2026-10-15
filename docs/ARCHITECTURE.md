@@ -24,7 +24,7 @@ sequenceDiagram
     C->>W: 需要时重新换取企微 token
 ```
 
-`workbuddy_auth.py` 管理官方云端会话；`dayuan.py` 管理 A2A、CLI、MCP 和本地任务回执。
+`workbuddy_auth.py` 管理官方云端会话；`dayuan.py` 管理 A2A、MCP、本地任务回执，并提供统一 CLI 入口 `dayuan`（`login`、`finish`、`renew`、`wecom-login` 转交 `workbuddy_auth.run`）。直接运行 `workbuddy_auth.py` 只是兼容层。状态目录默认 `~/.config/dayuan-lite`。
 
 ## 授权协议
 

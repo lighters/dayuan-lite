@@ -6,12 +6,12 @@
 
 按照 [快速开始](../README.md#快速开始) 克隆仓库并完成企业微信扫码。首次登录由用户确认，后续普通查询按需自动续期。
 
-在连接器目录运行以下命令，确认解释器与目录位置：
+在连接器目录运行以下命令，确认解释器、目录位置和实际使用的状态目录（输出中的 `state_dir`）：
 
 ```bash
 command -v python3
 pwd -P
-python3 workbuddy_auth.py --state-dir "$PWD/.private" status
+python3 dayuan.py status
 ```
 
 准备三个绝对路径：
@@ -20,9 +20,9 @@ python3 workbuddy_auth.py --state-dir "$PWD/.private" status
 | --- | --- |
 | `<PYTHON>` | Python 3.9+ 可执行文件的绝对路径 |
 | `<REPO>` | 包含 `dayuan.py` 与 `workbuddy_auth.py` 的仓库目录 |
-| `<STATE>` | 实际完成授权的状态目录，例如仓库下的 `.private` |
+| `<STATE>` | 实际完成授权的状态目录，默认是 `~/.config/dayuan-lite` 展开后的绝对路径 |
 
-如果之前使用了自定义 `DAYUAN_STATE_DIR` 或 `--state-dir`，必须填那个目录。状态目录不必位于仓库内。命令中的 `--state-dir` 放在 `read`、`result`、`status` 等子命令之前。
+如果之前使用了自定义 `DAYUAN_STATE_DIR` 或 `--state-dir`，或仍在用 0.2.x 的仓库内 `.private`，必须填那个目录。`--state-dir` 写在子命令前后都可以。用 pipx 安装了 `dayuan` 命令时，下面的 `"<PYTHON>" "<REPO>/dayuan.py"` 可以换成 `dayuan` 命令的绝对路径。
 
 不要复制凭据到对话、私有技能或云端电脑；只提供路径。`status` 显示 `ready` 只是本地检查，实际读取成功才证明远端授权可用。
 
