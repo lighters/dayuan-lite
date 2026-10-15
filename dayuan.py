@@ -15,7 +15,15 @@ import urllib.request
 import uuid
 
 BASE = "https://qyapi.weixin.qq.com/cgi-bin/a2a/api"
-DEFAULT_STATE = Path(__file__).resolve().parent / ".private"
+def config_home():
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return Path(xdg) if xdg and os.path.isabs(xdg) else Path.home() / ".config"
+
+
+DEFAULT_STATE = config_home() / "dayuan-lite"
+# Versions before 0.3.0 defaulted to a directory inside the checkout. It is only detected, never moved.
+LEGACY_STATE = Path(__file__).resolve().parent / ".private"
+CREDENTIAL_FILES = ("cloud-auth.json", "credentials.json")
 MAX_RESPONSE = 2 * 1024 * 1024
 # A stdio MCP server handles one call at a time, so a tool call may block for at most this long.
 MCP_MAX_WAIT = 30
@@ -386,20 +394,63 @@ def serve(state):
         print(json.dumps(reply, ensure_ascii=False), flush=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("DAYUAN_STATE_DIR", DEFAULT_STATE)))
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("status")
-    sub.add_parser("serve", help="MCP stdio server")
-    sub.add_parser("import-workbuddy-auth", help="One-time import of existing WeCom authorization; not used at runtime")
-    read = sub.add_parser("read")
+def resolve_state(arg=None):
+    """--state-dir, then DAYUAN_STATE_DIR, then the per-user default. Returns (path, explicitly_chosen)."""
+    chosen = arg or os.environ.get("DAYUAN_STATE_DIR")
+    return (Path(chosen).expanduser(), True) if chosen else (DEFAULT_STATE, False)
+
+
+def migration_hint(state, explicit):
+    if explicit or not any((LEGACY_STATE / f).exists() for f in CREDENTIAL_FILES) or any((Path(state) / f).exists() for f in CREDENTIAL_FILES):
+        return None
+    return {"legacy_state_dir": str(LEGACY_STATE), "default_state_dir": str(state),
+            "message": "检测到旧版默认状态目录中的授权，新版默认目录尚无授权。连接器不会自动移动凭据。"
+                       "继续使用旧目录：加 --state-dir 或设置 DAYUAN_STATE_DIR 为旧目录；或在确认没有进程正在使用后自行移动该目录到新默认位置。"}
+
+
+def warn_migration(state, explicit):
+    hint = migration_hint(state, explicit)
+    if hint:
+        print("dayuan: " + hint["message"] + " 旧目录：" + hint["legacy_state_dir"] + "；新默认目录：" + hint["default_state_dir"], file=sys.stderr, flush=True)
+    return hint
+
+
+AUTH_COMMANDS = ("login", "finish", "renew", "wecom-login")
+
+
+def build_parser():
+    # --state-dir is accepted both before and after the subcommand, so `dayuan --state-dir X status` and `dayuan status --state-dir X` agree.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--state-dir", type=Path, default=argparse.SUPPRESS, help="State directory (default: $DAYUAN_STATE_DIR or %s)" % DEFAULT_STATE)
+    parser = argparse.ArgumentParser(prog="dayuan", description=__doc__)
+    parser.add_argument("--state-dir", type=Path, default=None, help="State directory (default: $DAYUAN_STATE_DIR or %s)" % DEFAULT_STATE)
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    for name, text in [("login", "Start WorkBuddy cloud authorization (scan with WeCom)"), ("finish", "Resume a pending login")]:
+        cmd = sub.add_parser(name, parents=[common], help=text)
+        cmd.add_argument("--open", action="store_true", help="Open the official authorization page in the system browser")
+        cmd.add_argument("--wait", type=int, default=0, metavar="N", help="Poll login for at most N seconds (max 300)")
+    sub.add_parser("renew", parents=[common], help="Refresh the account session and exchange a new WeCom token")
+    sub.add_parser("wecom-login", parents=[common], help="Show the WeCom authorization page").add_argument("--open", action="store_true", help="Open it in the system browser")
+    sub.add_parser("status", parents=[common], help="Local configuration and authorization status; no network request")
+    read = sub.add_parser("read", parents=[common], help="Submit a read-only query")
     read.add_argument("--json", required=True, help="Query JSON, or - to read stdin")
     read.add_argument("--wait", type=int, default=0, metavar="N", help="Poll the same request_id for at most N seconds (0-%d)" % CLI_MAX_WAIT)
-    result = sub.add_parser("result")
+    result = sub.add_parser("result", parents=[common], help="Read the result of a submitted query")
     result.add_argument("request_id")
     result.add_argument("--wait", type=int, default=0, metavar="N", help="Poll for at most N seconds (0-%d)" % CLI_MAX_WAIT)
-    args = parser.parse_args()
+    sub.add_parser("serve", parents=[common], help="MCP stdio server")
+    sub.add_parser("import-workbuddy-auth", parents=[common], help="One-time import of existing WeCom authorization; not used at runtime")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    state, explicit = resolve_state(args.state_dir)
+    args.state_dir = state
+    hint = warn_migration(state, explicit)
+    if args.command in AUTH_COMMANDS:
+        from workbuddy_auth import run
+        sys.exit(run(args.command, state, getattr(args, "open", False), getattr(args, "wait", 0)))
     try:
         if args.command == "serve":
             serve(args.state_dir)
@@ -410,6 +461,12 @@ def main():
             client = Client(args.state_dir)
             if args.command == "status":
                 value = client.status()
+                if client.cloud_auth:
+                    from workbuddy_auth import CloudAuth
+                    value["cloud_auth"] = CloudAuth(args.state_dir).status()
+                value["state_dir"] = str(args.state_dir)
+                if hint:
+                    value["migration_hint"] = hint
             elif args.command == "read":
                 seconds = wait_seconds(args.wait, CLI_MAX_WAIT)
                 value = client.read(json.loads(sys.stdin.read(65537) if args.json == "-" else args.json), seconds)

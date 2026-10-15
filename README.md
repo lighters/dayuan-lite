@@ -16,13 +16,42 @@
 
 返回内容由远端大圆生成，可能是摘要。它不是原始聊天记录导出接口，不保证逐字原文、消息数量或完整性。
 
+## 安装
+
+仅依赖 Python 3.9+ 标准库，三种方式任选：
+
+```bash
+# 安装成 dayuan 命令
+pipx install git+https://github.com/lighters/dayuan-lite.git
+
+# 不安装，每次直接运行
+uvx --from git+https://github.com/lighters/dayuan-lite.git dayuan --help
+
+# 克隆后直接运行脚本，下文的 dayuan 换成 python3 dayuan.py 即可
+git clone https://github.com/lighters/dayuan-lite.git && cd dayuan-lite
+python3 dayuan.py --help
+```
+
+所有功能都在一个入口里：`dayuan login|finish|renew|status|wecom-login|read|result|serve`。旧的 `python3 workbuddy_auth.py login|finish|renew|status|wecom-login` 仍然可用，作为兼容层调用同一实现。
+
+### 状态目录
+
+授权和任务回执默认保存在 `~/.config/dayuan-lite`（如设置了绝对路径的 `XDG_CONFIG_HOME`，则为 `$XDG_CONFIG_HOME/dayuan-lite`）。优先级：`--state-dir` > 环境变量 `DAYUAN_STATE_DIR` > 默认目录。`--state-dir` 写在子命令前后都可以，`dayuan status` 会显示实际使用的目录。
+
+**从 0.2.x 升级**：旧版默认目录是仓库内的 `.private`。如果它里面有授权、而新默认目录还没有，连接器会在标准错误和 `status` 的 `migration_hint` 里提示，但**不会自动移动凭据**。可以二选一：
+
+```bash
+# 继续使用旧目录
+export DAYUAN_STATE_DIR=/path/to/dayuan-lite/.private
+
+# 或者确认没有 dayuan / MCP 进程在运行后，自行移动
+mkdir -p ~/.config && mv /path/to/dayuan-lite/.private ~/.config/dayuan-lite
+```
+
 ## 快速开始
 
 ```bash
-git clone https://github.com/lighters/dayuan-lite.git
-cd dayuan-lite
-export DAYUAN_STATE_DIR="$PWD/.private"
-python3 workbuddy_auth.py login --open --wait 300
+dayuan login --open --wait 300
 ```
 
 用企业微信扫描官方网页二维码并确认。网页显示「打开 WorkBuddy」时可忽略，连接器不需要桌面回跳。无图形环境时去掉 `--open`，自行打开命令输出的授权链接。
@@ -30,8 +59,8 @@ python3 workbuddy_auth.py login --open --wait 300
 轮询最多等待 5 分钟。如果扫码完成时轮询已经结束，可恢复取票：
 
 ```bash
-python3 workbuddy_auth.py finish --wait 60
-python3 workbuddy_auth.py status
+dayuan finish --wait 60
+dayuan status
 ```
 
 服务器确认授权已过期后，再运行 `login`。`status` 只读取本地状态，不代表远端授权仍有效。每位使用者都需要完成自己的账号授权。
@@ -41,14 +70,14 @@ python3 workbuddy_auth.py status
 替换示例群名、关键词和时间。`request_id` 在一次逻辑查询的重试中必须保持不变。
 
 ```bash
-python3 dayuan.py read --wait 60 --json '{"request_id":"find-project-001","operation":"search_groups","query":"项目讨论","limit":5}'
+dayuan read --wait 60 --json '{"request_id":"find-project-001","operation":"search_groups","query":"项目讨论","limit":5}'
 
-python3 dayuan.py read --wait 60 --json '{"request_id":"read-project-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
+dayuan read --wait 60 --json '{"request_id":"read-project-001","operation":"read_chat","chat":"项目讨论群","since":"2026-10-15T00:00:00+08:00","until":"2026-10-15T12:00:00+08:00","limit":3}'
 
-python3 dayuan.py read --wait 60 --json '{"request_id":"search-project-001","operation":"search_messages","chat":"项目讨论群","query":"会议安排","limit":5}'
+dayuan read --wait 60 --json '{"request_id":"search-project-001","operation":"search_messages","chat":"项目讨论群","query":"会议安排","limit":5}'
 
 # 等待结束仍未完成时，用同一 ID 继续等待
-python3 dayuan.py result --wait 60 read-project-001
+dayuan result --wait 60 read-project-001
 ```
 
 `--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
@@ -63,12 +92,24 @@ python3 dayuan.py result --wait 60 read-project-001
 
 ## 接入 MCP
 
-复制 [mcp-config.example.json](mcp-config.example.json) 的内容到宿主配置，将其中的路径替换为实际绝对路径。Python 可执行文件必须是 3.9+；如果宿主无法解析 `python3`，使用它的绝对路径。
+**MCP 的状态目录必须与登录命令一致。** 登录和 MCP 都用默认目录时不需要额外配置；用了自定义目录时，在 `args` 里加 `--state-dir`，或在宿主配置里设置 `DAYUAN_STATE_DIR`。
 
-**MCP 的状态目录必须与登录命令一致。** 示例使用仓库下的 `.private`。手动启动服务：
+用 pipx 安装后（宿主的 PATH 可能不含 `~/.local/bin`，建议写 `command -v dayuan` 输出的绝对路径）：
+
+```json
+{"mcpServers": {"dayuan-lite": {"command": "/absolute/path/to/dayuan", "args": ["serve"]}}}
+```
+
+用 uvx（不安装）：
+
+```json
+{"mcpServers": {"dayuan-lite": {"command": "uvx", "args": ["--from", "git+https://github.com/lighters/dayuan-lite.git", "dayuan", "serve"]}}}
+```
+
+克隆仓库直接运行时参考 [mcp-config.example.json](mcp-config.example.json)，把路径替换为实际绝对路径；Python 必须是 3.9+，宿主无法解析 `python3` 时写它的绝对路径。手动启动服务：
 
 ```bash
-python3 dayuan.py --state-dir "$DAYUAN_STATE_DIR" serve
+dayuan serve
 ```
 
 | 工具 | 功能 |
@@ -86,15 +127,15 @@ python3 dayuan.py --state-dir "$DAYUAN_STATE_DIR" serve
 正常读取会检查缓存，到期前自动续期。也可以手动触发：
 
 ```bash
-python3 workbuddy_auth.py renew
+dayuan renew
 ```
 
 如果出现 `WECOM_AUTH_REQUIRED_OPEN_WECOM_LOGIN`，在完成账号登录的同一浏览器中授权同一企业微信账号：
 
 ```bash
-python3 workbuddy_auth.py wecom-login --open
+dayuan wecom-login --open
 # 页面成功后
-python3 workbuddy_auth.py renew
+dayuan renew
 ```
 
 缺少 refresh token、长期授权到期或撤销时，需要重新授权。刷新请求结果不确定时，客户端会停止自动重放并报告 `REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED`；重新运行 `login` 恢复。不要把旧凭据文件覆盖回去。
@@ -103,7 +144,7 @@ python3 workbuddy_auth.py renew
 
 ## 数据与权限
 
-- 凭据只保存在指定状态目录，目录权限 700、文件权限 600；`.private*/`、凭据文件和本地配置已加入 `.gitignore`。
+- 凭据只保存在状态目录（默认 `~/.config/dayuan-lite`，不在仓库内），目录权限 700、文件权限 600；旧版的 `.private*/`、凭据文件和本地配置仍在 `.gitignore` 中。
 - 凭据文件是受文件权限保护的明文，不要共享、提交或上传状态目录。授权链接也应视为敏感内容。
 - 账号请求仅发往 `www.workbuddy.cn`，A2A 请求仅发往 `qyapi.weixin.qq.com`，拒绝 HTTP 重定向。
 - 只暴露查询模板，提示远端不要发送消息或执行其他写操作。提示词不等于服务器强制的只读权限。
@@ -118,7 +159,7 @@ python3 workbuddy_auth.py renew
 python3 -m unittest test_dayuan.py test_workbuddy_auth.py -v
 ```
 
-38 项离线测试覆盖查询约束、幂等提交、被拒请求重提、服务端有界等待、异常结果恢复、上游异常响应、并发续期、凭据轮换、稳定身份检查和 MCP 握手与工具声明。测试不访问真实账号；当前仓库未启用 GitHub Actions。
+44 项离线测试（Python 3.11 以下会跳过 1 项 pyproject 检查）覆盖统一入口与参数位置、默认状态目录及旧目录迁移提示、打包声明、查询约束、幂等提交、被拒请求重提、服务端有界等待、异常结果恢复、上游异常响应、并发续期、凭据轮换、稳定身份检查和 MCP 握手与工具声明。测试不访问真实账号；当前仓库未启用 GitHub Actions。
 
 2026-10-15 的原型已完成独立扫码、真实换票、A2A 查询、主动续期及新 MCP 进程恢复任务。自动续期也通过了联机验证：人为将本地缓存期限设为过期，再由普通读取触发真实云端续期。尚未观察跨天自然到期的长期运行。
 
