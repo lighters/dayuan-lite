@@ -75,7 +75,14 @@ def account_identity(account):
     return account['uid'], account.get('enterpriseId')
 
 
+def fresh(value):
+    return deadline(value) > timestamp() + 60000
+
+
 class CloudAuth:
+    # Wait briefly for another process's renewal instead of failing at once.
+    LOCK_TIMEOUT = 30
+
     def __init__(self, state=DEFAULT_STATE):
         self.state = Path(state)
         self.path = self.state / 'cloud-auth.json'
@@ -85,8 +92,14 @@ class CloudAuth:
         private_dir(self.state)
         fd = os.open(str(self.state / '.auth.lock'), os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
-            try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError: raise AuthError('AUTH_BUSY') from None
+            end = time.monotonic() + self.LOCK_TIMEOUT
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= end: raise AuthError('AUTH_BUSY') from None
+                    time.sleep(0.1)
             yield
         finally:
             os.close(fd)
@@ -210,17 +223,27 @@ class CloudAuth:
         self.save(d)
         self._account(d)
 
+    def cached_wecom(self, d):
+        current = d.get('wecom')
+        if d.get('phase') == 'ready' and fresh(d.get('auth',{}).get('expiresAt')) and current and fresh(current.get('expires_at_ms')):
+            return current
+        return None
+
     def ensure_wecom(self, force=False, refresh_account=False):
+        if not force and not refresh_account:
+            # Saves are atomic replaces, so a cache hit needs no lock and never contends with other readers.
+            current = self.cached_wecom(self.load())
+            if current: return current
         with self.locked():
             d = self.load()
             if d.get('phase') == 'refresh_unknown': raise AuthError('REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED')
             if d.get('phase') == 'pending_account': self._account(d)
             if d.get('phase') != 'ready': raise AuthError('LOGIN_REQUIRED')
-            a=d['auth']
-            if refresh_account or not deadline(a.get('expiresAt')) or a['expiresAt'] <= timestamp()+60000:
+            if refresh_account or not fresh(d['auth'].get('expiresAt')):
                 self._refresh(d)
             current=d.get('wecom')
-            if not force and not refresh_account and current and current.get('expires_at_ms',0)>timestamp()+60000:
+            # Another process may have renewed while this one waited for the lock.
+            if not force and not refresh_account and current and fresh(current.get('expires_at_ms')):
                 return current
             enterprise=d['account'].get('enterpriseId')
             if not isinstance(enterprise,str) or not enterprise: raise AuthError('ENTERPRISE_ACCOUNT_REQUIRED')
