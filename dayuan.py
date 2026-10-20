@@ -2,7 +2,7 @@
 """Direct WeCom Dayuan A2A client. Python 3.9+, standard library only."""
 import argparse
 import fcntl
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -32,6 +32,8 @@ MCP_MAX_WAIT = 30
 CLI_MAX_WAIT = 300
 POLL_INTERVAL = 3
 PENDING_STATES = ("submitted", "working")
+# Only these receipts may be garbage-collected; anything else may still be in flight or need a human decision.
+TERMINAL_STATES = ("completed", "failed", "cancelled", "rejected")
 WAIT_SCHEMA = {"type": "integer", "minimum": 0, "maximum": MCP_MAX_WAIT, "default": 0, "description": "服务端在本次调用内按同一 request_id 轮询结果的最长秒数（0–30）；到时仍未完成则返回当前状态。"}
 QUERY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["request_id", "operation"], "properties": {
     "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,80}$"},
@@ -131,6 +133,72 @@ def load_private(path):
         if os.fstat(stream.fileno()).st_mode & 0o077:
             raise Error("PRIVATE_FILE_PERMISSIONS_REQUIRED")
         return json.load(stream)
+
+
+def list_receipts(state, state_filter=None):
+    """Local receipts only, newest first; never touches the network or credentials."""
+    if state_filter is not None and not re.fullmatch(r"[a-z_]{1,40}", state_filter):
+        raise Error("INVALID_STATE_FILTER")
+    receipts = []
+    for path in (Path(state) / "requests").glob("*.json"):
+        try:
+            record = as_dict(load_private(path))
+        except ValueError:
+            # A corrupt receipt must not hide the others; it is also never terminal, so gc leaves it alone.
+            record = {"state": "unreadable"}
+        entry = {"request_id": path.stem, "state": text_or_none(record.get("state")), "task_id": text_or_none(record.get("task_id")), "created_at": text_or_none(record.get("created_at"))}
+        if state_filter is None or entry["state"] == state_filter:
+            receipts.append(entry)
+    receipts.sort(key=lambda entry: entry["created_at"] or "", reverse=True)
+    return receipts
+
+
+def older_than_days(value):
+    found = re.fullmatch(r"(\d{1,5})d", value or "")
+    if not found or int(found.group(1)) > 36500:
+        raise Error("INVALID_OLDER_THAN")
+    return int(found.group(1))
+
+
+def gc_receipts(state, days, apply=False):
+    """Delete terminal receipts older than `days` and their lock files. A lock that cannot be taken with LOCK_NB
+    means another process is working on that request_id, so the receipt is skipped rather than pulled from under it."""
+    state = Path(state)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    receipts, busy = [], []
+    for entry in list_receipts(state):
+        if entry["state"] not in TERMINAL_STATES or not entry["created_at"]:
+            continue
+        try:
+            created = datetime.fromisoformat(entry["created_at"])
+        except ValueError:
+            continue
+        if created.tzinfo is None or created >= cutoff:
+            continue
+        lock = state / ".request-locks" / (entry["request_id"] + ".lock")
+        try:
+            fd = os.open(str(lock), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            fd = None
+        try:
+            if fd is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    busy.append(entry)
+                    continue
+            if apply:
+                (state / "requests" / (entry["request_id"] + ".json")).unlink(missing_ok=True)
+                if fd is not None:
+                    lock.unlink(missing_ok=True)
+            receipts.append(entry)
+        finally:
+            if fd is not None:
+                os.close(fd)
+    value = {"dry_run": not apply, "older_than_days": days, "receipts": receipts, "skipped_busy": busy}
+    if not apply:
+        value["next_action"] = "以上是将删除的回执预览，尚未删除。确认后加 --yes 执行。"
+    return value
 
 
 def import_workbuddy(state, source=None):
@@ -500,6 +568,11 @@ def build_parser():
     bridge.add_argument("operation", choices=("doc-search", "doc-read", "meeting-list", "meeting-get"))
     bridge.add_argument("--json", required=True, help="Parameters JSON, or - to read stdin")
     bridge.add_argument("--wecom-cli", help="Trusted official CLI executable (default: $DAYUAN_WECOM_CLI or wecom-cli)")
+    listing = sub.add_parser("list", parents=[common], help="List local request receipts; no network request")
+    listing.add_argument("--state", metavar="STATE", help="Only receipts in this state (completed, working, outcome_unknown, ...)")
+    gc = sub.add_parser("gc", parents=[common], help="Delete completed/failed/cancelled/rejected receipts and their lock files")
+    gc.add_argument("--older-than", required=True, metavar="Nd", help="Only receipts created more than N days ago, e.g. 30d")
+    gc.add_argument("--yes", action="store_true", help="Actually delete; without it only the receipts that would be deleted are printed")
     sub.add_parser("serve", parents=[common], help="MCP stdio server")
     sub.add_parser("import-workbuddy-auth", parents=[common], help="One-time import of existing WeCom authorization; not used at runtime")
     return parser
@@ -525,6 +598,10 @@ def main(argv=None):
             value = Bridge(state, executable=args.wecom_cli).read(args.operation, json.loads(raw))
         elif args.command == "import-workbuddy-auth":
             value = import_workbuddy(args.state_dir)
+        elif args.command == "list":
+            value = {"state_dir": str(args.state_dir), "receipts": list_receipts(args.state_dir, args.state)}
+        elif args.command == "gc":
+            value = {"state_dir": str(args.state_dir), **gc_receipts(args.state_dir, older_than_days(args.older_than), args.yes)}
         else:
             client = Client(args.state_dir)
             if args.command == "status":
