@@ -35,7 +35,7 @@ git clone https://github.com/lighters/dayuan-lite.git && cd dayuan-lite
 python3 dayuan.py --help
 ```
 
-所有功能都在一个入口里：`dayuan login|finish|renew|status|wecom-login|read|result|wecom|serve`。旧的 `python3 workbuddy_auth.py login|finish|renew|status|wecom-login` 仍然可用，作为兼容层调用同一实现。
+所有功能都在一个入口里：`dayuan login|finish|renew|status|wecom-login|read|result|wecom|list|gc|serve`。旧的 `python3 workbuddy_auth.py login|finish|renew|status|wecom-login` 仍然可用，作为兼容层调用同一实现。
 
 ### 状态目录
 
@@ -184,6 +184,23 @@ dayuan renew
 缺少 refresh token、长期授权到期或撤销时，需要重新授权。刷新请求发出后结果不确定时，客户端会停止自动重放并报告 `REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED`；重新运行 `login` 恢复。请求发出前就失败的情况（等待预算耗尽 `WAIT_TIMEOUT`、域名解析失败或连接被拒 `TRANSPORT_NOT_SENT`）不会进入该状态，稍后再试即可。不要把旧凭据文件覆盖回去。
 
 切换用户或企业应使用新的 `--state-dir`。未到期的凭据可并发读取；需要续期时，其他调用最多等待 30 秒，仍未结束才返回 `AUTH_BUSY`，此时稍后再试。
+
+### 回执管理
+
+每次提交都会在状态目录的 `requests/` 下留下一份回执（`request_id`、状态、任务 ID、创建时间等，不含查询内容和凭据），并在 `.request-locks/` 下留下一个锁文件；两者都不会自动清理。两个维护命令只读写本地文件，不联网、不需要有效授权，也没有对应的 MCP 工具：
+
+```bash
+# 按创建时间倒序列出本地回执，可按状态过滤
+dayuan list
+dayuan list --state working
+
+# 先预览：30 天前创建、且已到终态的回执
+dayuan gc --older-than 30d
+# 确认后真正删除回执，保留锁文件
+dayuan gc --older-than 30d --yes
+```
+
+`gc` 只删除 `completed` / `failed` / `cancelled` / `rejected` 的回执；`dispatching`、`submitted`、`working`、`outcome_unknown` 等状态一律保留，因为它们可能仍在进行或需要人工判断。实际删除前会创建缺失的锁文件，并且必须能立即拿到该 `request_id` 的进程锁，拿不到的回执会列在 `skipped_busy` 中并跳过；持锁后重新读取回执并检查终态及创建时间，避免误删已重试的活动任务。锁文件永久保留，避免等待中的进程使用不同锁实例；预览不创建锁文件。`--older-than` 必须写成 `Nd`（N 为天数）。被删除的 `request_id` 之后再提交会被当作新任务。
 
 ## 数据与权限
 
