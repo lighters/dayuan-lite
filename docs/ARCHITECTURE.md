@@ -54,6 +54,7 @@ sequenceDiagram
 - 每个请求 ID 使用独立进程锁，覆盖回执检查、被拒后的替换及提交；并发提交先等待锁最多 10 秒（`REQUEST_LOCK_WAIT`），超时后若回执已有 `task_id` 且输入一致就返回该任务的结果，输入不同返回 `REQUEST_CONFLICT`，回执不存在或尚无 `task_id` 才返回 `REQUEST_BUSY`；任何情况下都不会与持锁方并行提交。锁文件保留，避免删除后形成不同锁实例。
 - 提交前原子创建本地回执；不确定的提交结果不会自动再发送。
 - 相同 `request_id`、相同输入用于恢复已有任务；相同 ID、不同输入返回冲突。
+- `result()` 拿到 `TERMINAL_STATES` 中的状态时，把 `normalize` 的输出整体写入回执的 `result` 字段（只有归一化后的字段，没有 token 和上游原始响应体；回执文件权限为 600、私有目录权限为 700）。之后同一 ID 的 `result()` 在通过凭据/身份检查后直接返回该副本，不再发 A2A 查询；非终态回执没有 `result` 字段，每次仍联网。授权预检（`prepare_auth`）在缓存命中前仍会执行，临近到期时可能触发一次云端续期。
 - 回执和锁文件不会自动清理。`dayuan list` 只读取 `requests/*.json` 并按 `created_at` 倒序输出摘要字段；`dayuan gc --older-than Nd` 只处理 `TERMINAL_STATES`（`completed` / `failed` / `cancelled` / `rejected`）且创建时间早于 N 天的回执，默认只预览，加 `--yes` 才删除。删除前以 `LOCK_NB` 尝试取得该请求的锁，取不到就跳过；实际删除时创建缺失锁文件，取锁后重新读取回执并核对终态及创建时间，只删除仍符合条件的回执，永久保留锁文件，避免等待中的提交者使用不同锁实例。预览不创建锁文件。非终态（含 `outcome_unknown`、`dispatching`）永不删除，无法解析的回执按 `unreadable` 列出且不删除。两个命令不发网络请求，也不作为 MCP 工具暴露。
 
 ## 等待预算
