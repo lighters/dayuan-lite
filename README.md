@@ -196,11 +196,11 @@ dayuan list --state working
 
 # 先预览：30 天前创建、且已到终态的回执
 dayuan gc --older-than 30d
-# 确认后真正删除回执及其锁文件
+# 确认后真正删除回执，保留锁文件
 dayuan gc --older-than 30d --yes
 ```
 
-`gc` 只删除 `completed` / `failed` / `cancelled` / `rejected` 的回执；`dispatching`、`submitted`、`working`、`outcome_unknown` 等状态一律保留，因为它们可能仍在进行或需要人工判断。删除前必须能立即拿到该 `request_id` 的进程锁，拿不到的回执会列在 `skipped_busy` 中并跳过。`--older-than` 必须写成 `Nd`（N 为天数）。被删除的 `request_id` 之后再提交会被当作新任务。
+`gc` 只删除 `completed` / `failed` / `cancelled` / `rejected` 的回执；`dispatching`、`submitted`、`working`、`outcome_unknown` 等状态一律保留，因为它们可能仍在进行或需要人工判断。实际删除前会创建缺失的锁文件，并且必须能立即拿到该 `request_id` 的进程锁，拿不到的回执会列在 `skipped_busy` 中并跳过；持锁后重新读取回执并检查终态及创建时间，避免误删已重试的活动任务。锁文件永久保留，避免等待中的进程使用不同锁实例；预览不创建锁文件。`--older-than` 必须写成 `Nd`（N 为天数）。被删除的 `request_id` 之后再提交会被当作新任务。
 
 ## 数据与权限
 

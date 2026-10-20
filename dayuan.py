@@ -143,6 +143,8 @@ def list_receipts(state, state_filter=None):
     for path in (Path(state) / "requests").glob("*.json"):
         try:
             record = as_dict(load_private(path))
+        except FileNotFoundError:
+            continue
         except ValueError:
             # A corrupt receipt must not hide the others; it is also never terminal, so gc leaves it alone.
             record = {"state": "unreadable"}
@@ -161,23 +163,26 @@ def older_than_days(value):
 
 
 def gc_receipts(state, days, apply=False):
-    """Delete terminal receipts older than `days` and their lock files. A lock that cannot be taken with LOCK_NB
-    means another process is working on that request_id, so the receipt is skipped rather than pulled from under it."""
+    """Delete old terminal receipts under their request lock; keep lock files for waiting starters."""
     state = Path(state)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    def eligible(record):
+        if record.get("state") not in TERMINAL_STATES or not isinstance(record.get("created_at"), str):
+            return False
+        try:
+            created = datetime.fromisoformat(record["created_at"])
+        except ValueError:
+            return False
+        return created.tzinfo is not None and created < cutoff
     receipts, busy = [], []
     for entry in list_receipts(state):
-        if entry["state"] not in TERMINAL_STATES or not entry["created_at"]:
-            continue
-        try:
-            created = datetime.fromisoformat(entry["created_at"])
-        except ValueError:
-            continue
-        if created.tzinfo is None or created >= cutoff:
+        if not eligible(entry):
             continue
         lock = state / ".request-locks" / (entry["request_id"] + ".lock")
+        if apply:
+            private_dir(lock.parent)
         try:
-            fd = os.open(str(lock), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(str(lock), os.O_RDWR | (os.O_CREAT if apply else 0) | getattr(os, "O_NOFOLLOW", 0), 0o600)
         except FileNotFoundError:
             fd = None
         try:
@@ -187,10 +192,17 @@ def gc_receipts(state, days, apply=False):
                 except BlockingIOError:
                     busy.append(entry)
                     continue
+            # A rejected receipt may have been retried since the directory snapshot was taken.
+            path = state / "requests" / (entry["request_id"] + ".json")
+            try:
+                record = as_dict(load_private(path))
+            except (FileNotFoundError, ValueError):
+                continue
+            if not eligible(record):
+                continue
+            entry = {"request_id": entry["request_id"], "state": record["state"], "task_id": text_or_none(record.get("task_id")), "created_at": record["created_at"]}
             if apply:
-                (state / "requests" / (entry["request_id"] + ".json")).unlink(missing_ok=True)
-                if fd is not None:
-                    lock.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             receipts.append(entry)
         finally:
             if fd is not None:
@@ -570,7 +582,7 @@ def build_parser():
     bridge.add_argument("--wecom-cli", help="Trusted official CLI executable (default: $DAYUAN_WECOM_CLI or wecom-cli)")
     listing = sub.add_parser("list", parents=[common], help="List local request receipts; no network request")
     listing.add_argument("--state", metavar="STATE", help="Only receipts in this state (completed, working, outcome_unknown, ...)")
-    gc = sub.add_parser("gc", parents=[common], help="Delete completed/failed/cancelled/rejected receipts and their lock files")
+    gc = sub.add_parser("gc", parents=[common], help="Delete old terminal receipts; retain request lock files")
     gc.add_argument("--older-than", required=True, metavar="Nd", help="Only receipts created more than N days ago, e.g. 30d")
     gc.add_argument("--yes", action="store_true", help="Actually delete; without it only the receipts that would be deleted are printed")
     sub.add_parser("serve", parents=[common], help="MCP stdio server")
