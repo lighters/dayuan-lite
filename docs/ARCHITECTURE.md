@@ -74,8 +74,8 @@ sequenceDiagram
 | `meeting-list` | `meeting list --json …` |
 | `meeting-get` | `meeting get --json …` |
 
-不新增 HTTP 主机或自建端点。适配器仅在 `run_cli` 通过 `Popen` 启动受信任的 CLI，不使用 shell。继承环境中的全部 `WECOM_CLI_*` 被清除，只设置临时 `WECOM_CLI_CONFIG_DIR` 和当前 `WECOM_CLI_ACCESS_TOKEN`，同时移除 `DAYUAN_ACCESS_TOKEN`。CLI 路径由本机参数或环境指定，MCP 请求不能指定程序路径。版本检查时不注入 token。
+不新增 HTTP 主机或自建端点。适配器仅在 `run_cli` 通过 `Popen` 启动受信任的 CLI，不使用 shell。继承环境中的全部 `WECOM_CLI_*` 被清除，只设置临时 `WECOM_CLI_CONFIG_DIR` 和当前 `WECOM_CLI_ACCESS_TOKEN`，同时移除 `DAYUAN_ACCESS_TOKEN` 以及可向 Node 进程注入代码的 `NODE_OPTIONS` / `NODE_PATH`。CLI 版本按可执行文件的路径、mtime 和大小在进程内缓存，`serve` 模式下每个二进制只检查一次，重装后重新检查。CLI 路径由本机参数或环境指定，MCP 请求不能指定程序路径。版本检查时不注入 token。
 
-标准输出/错误分别限 2MiB / 64KiB；子进程等待有总预算，超时/超限终止进程组并回收进程。原始 stderr、异常响应和版本输出不回显；业务错误只保留数字机器码。成功数据中匹配当前令牌的字符串被替换。临时配置目录在调用结束后删除，CLI 写出的正文文件仅允许在该目录内、是普通文件且读取后总响应仍不超过 2MiB；越界路径、链接或非文本正文报错。
+标准输出限 2MiB，超限报错；标准错误只保留前 64KiB、持续读空、从不回传，再多也不影响本次读取；子进程等待有总预算，超时/超限终止进程组并回收进程。原始 stderr、异常响应和版本输出不回显；业务错误只保留数字机器码。成功数据中匹配当前令牌的字符串被替换。临时配置目录在调用结束后删除，CLI 写出的正文文件仅允许在该目录内、是普通文件且读取后总响应仍不超过 2MiB；内联到 `content`，若 CLI 已返回 `content` 则放入 `file_content`；越界路径、链接或非文本正文报错。
 
 令牌错误 `853004` / `853005` 仅允许重换企微令牌后重试一次，操作仍是白名单只读请求；不重复提交 A2A 任务。其他错误直接停止，沿用 CloudAuth 对不确定 refresh token 轮换的保护。

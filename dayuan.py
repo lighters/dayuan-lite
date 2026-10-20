@@ -210,6 +210,11 @@ class Client:
             from workbuddy_auth import CloudAuth
             cloud = CloudAuth(self.state).status()
             status.update(cloud_dependency=cloud['cloud_dependency'], auth_phase=cloud['phase'], automatic_renewal=cloud['refresh_credential_present'])
+        from wecom_bridge import default_executable
+        import shutil
+        executable = default_executable()
+        # Presence only: no process is started, so this says nothing about the CLI's version or the token.
+        status["wecom_cli"] = {"executable": executable, "found": shutil.which(executable) is not None}
         return status
 
     def prepare_auth(self):

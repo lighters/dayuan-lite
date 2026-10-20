@@ -105,7 +105,7 @@ dayuan wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回的
 
 每次调用先校验操作与参数、检查 CLI 版本，再调用云端授权模块检查缓存；临近到期时自动刷新账号/重新换取企微用户令牌。令牌只通过该次子进程的环境传递，不输出、不进入命令参数；连接器使用临时空配置目录，移除继承的 CLI 令牌、额外请求头及日志配置，不会回退到已有 Bot 凭据，也不会改动原有 Bot 配置。明确的令牌失效码 `853004` / `853005` 会触发一次重新换票和只读重试，其他失败直接返回机器码。
 
-可用 `--wecom-cli /absolute/path/to/wecom-cli` 指定受信任的官方可执行文件；CLI 和 MCP 也支持本机环境变量 `DAYUAN_WECOM_CLI`。这是程序路径，不是凭据。不要将任意脚本或上游返回的路径配置为 CLI。
+可用 `--wecom-cli /absolute/path/to/wecom-cli` 指定受信任的官方可执行文件；CLI 和 MCP 也支持本机环境变量 `DAYUAN_WECOM_CLI`。这是程序路径，不是凭据。不要将任意脚本或上游返回的路径配置为 CLI。`dayuan status` 的 `wecom_cli.found` 只检查该程序是否能找到，不启动它、不校验版本。
 
 | 操作 | 参数与限制 |
 | --- | --- |

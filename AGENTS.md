@@ -47,7 +47,7 @@ CI 在 Python 3.9 / 3.12 / 3.13 上跑同样两条命令；`check.py` 会核对�
 
 **凭据与输出**
 - 不在任何输出、异常、日志、测试断言消息里出现 token、refresh token、上游响应体。错误只返回机器码。
-- 子进程令牌只经环境变量传入，不进 argv；继承环境中的 `WECOM_CLI_*` 与 `DAYUAN_ACCESS_TOKEN` 必须清除；子进程 stdout/stderr 有上限，stderr 不回显。
+- 子进程令牌只经环境变量传入，不进 argv；继承环境中的 `WECOM_CLI_*`、`DAYUAN_ACCESS_TOKEN`、`NODE_OPTIONS`、`NODE_PATH` 必须清除；子进程 stdout/stderr 有上限，stderr 不回显。
 - 错误码用 `UPPER_SNAKE_CASE` 英文；面向用户的说明（`next_action`、`instructions`、文档）用中文。
 - 产品名统一写「大渊」。文档描述项目做什么、怎么用、验证了什么，不写接口的来历或获取方式。
 - stdout 只输出 JSON。`serve` 模式下 stdout 是 MCP 协议通道，任何额外的 `print` 都会破坏协议；提示信息写 stderr。
