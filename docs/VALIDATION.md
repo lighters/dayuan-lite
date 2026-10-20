@@ -57,6 +57,10 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 
 这条路径可作为已测只读接口的用户凭据来源，不是延长 Bot 七天权限。未证明跨七天自然到期后的无人值守、所有企业/文档/会议的权限覆盖，也未验证会议转写、录制或任何写操作。
 
+## 终态结果缓存（2026-10-20）
+
+只有离线测试：任务从 `working` 变为 `completed` / `failed` 后，再次 `result()` 与 `read_result()` 不再调用 `Client.request` 或底层 HTTP，返回与首次相同的归一化结果；回执文件里含整理后的 `text`，不含 token、查询原文、上游 `history` / `artifacts` 等原始字段；`working` 任务每次仍联网且回执无 `result`；换用另一凭据读取同一 ID 仍被拒绝且不联网。没有对真实大渊任务联机验证缓存命中。
+
 ## 回执管理命令（2026-10-20）
 
 `dayuan list` / `dayuan gc` 只有离线测试：在临时状态目录写入各状态、各创建时间的回执，断言列表顺序与过滤、`gc` 预览不改动文件、`--yes` 只删除终态且过期的回执及其锁文件、非终态与近期回执保留、持锁中的回执被跳过、无锁文件的旧回执仍可删除、`--older-than` 格式校验，以及整个过程没有网络调用、输出里没有凭据指纹。没有在真实账号的状态目录上运行过 `gc --yes`。

@@ -181,6 +181,8 @@ dayuan wecom-login --open
 dayuan renew
 ```
 
+任务一旦进入 `completed` / `failed` / `cancelled` / `rejected`，连接器会把整理后的结果（`text`、`task_id`、`limitation` 等字段，不含凭据和上游原始响应）写进该 `request_id` 的本地回执；之后对同一 ID 的 `result` / `dayuan_read_result` 直接返回这份副本，不再向企业微信发请求。仍在 `submitted` / `working` 的任务每次都会联网查询。缓存只对同一账号身份有效，身份变化仍返回 `CREDENTIAL_CHANGED_OR_MISSING`；用 `dayuan gc` 删除回执后，该结果也随之删除。
+
 缺少 refresh token、长期授权到期或撤销时，需要重新授权。刷新请求发出后结果不确定时，客户端会停止自动重放并报告 `REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED`；重新运行 `login` 恢复。请求发出前就失败的情况（等待预算耗尽 `WAIT_TIMEOUT`、域名解析失败或连接被拒 `TRANSPORT_NOT_SENT`）不会进入该状态，稍后再试即可。不要把旧凭据文件覆盖回去。
 
 切换用户或企业应使用新的 `--state-dir`。未到期的凭据可并发读取；需要续期时，其他调用最多等待 30 秒，仍未结束才返回 `AUTH_BUSY`，此时稍后再试。

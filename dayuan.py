@@ -417,10 +417,15 @@ class Client:
             raise Error("CREDENTIAL_CHANGED_OR_MISSING")
         if not record.get("task_id"):
             return {"request_id": rid, "state": "outcome_unknown" if record["state"] == "dispatching" else record["state"], "error": record.get("error"), "retry_safe": record["state"] == "rejected"}
+        # A terminal task never changes upstream; serve the normalized copy kept in the receipt instead of re-fetching.
+        if record.get("state") in TERMINAL_STATES and isinstance(record.get("result"), dict):
+            return {"request_id": rid, **record["result"]}
         result = normalize(self.request("GET", "/tasks/" + record["task_id"] + "?historyLength=0"))
         if result["task_id"] != record["task_id"] or result["context_id"] != record.get("context_id"):
             raise Error("TASK_CONTEXT_MISMATCH")
         record["state"] = result["state"]
+        if result["state"] in TERMINAL_STATES:
+            record["result"] = result
         save_private(self.record_path(rid), record)
         return {"request_id": rid, **result}
 

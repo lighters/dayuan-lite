@@ -225,6 +225,54 @@ class DayuanTests(unittest.TestCase):
             self.assertTrue(body["configuration"]["returnImmediately"])
             self.assertEqual(body["configuration"]["historyLength"], 0)
 
+    def test_terminal_result_is_cached_in_the_receipt_and_not_refetched(self):
+        working = {**TASK, "status": {"state": "TASK_STATE_WORKING"}, "history": []}
+        for final_state in ("TASK_STATE_COMPLETED", "TASK_STATE_FAILED"):
+            rid = QUERY["request_id"] + final_state[-3:].lower()
+            query = {**QUERY, "request_id": rid}
+            final = {**TASK, "status": {"state": final_state}}
+            with patch.object(self.client, "request", side_effect=[working, final]) as request:
+                self.client.start(query)
+                first = self.client.result(rid)
+            self.assertEqual([c.args[0] for c in request.call_args_list], ["POST", "GET"])
+            self.assertEqual(first["text"], "测试摘要")
+            with patch("urllib.request.OpenerDirector.open") as network, patch.object(self.client, "request") as request:
+                second = self.client.result(rid)
+                waited = self.client.read_result(rid, 10)
+            network.assert_not_called()
+            request.assert_not_called()
+            self.assertEqual(second, first)
+            self.assertEqual(waited, first)
+            self.assertEqual(second["state"], final_state.removeprefix("TASK_STATE_").lower())
+            raw = (self.root / "requests" / (rid + ".json")).read_text()
+            self.assertIn("测试摘要", raw)
+            for secret in ("test-private-token", "private query", "ROLE_AGENT", "history", "TASK_STATE_", "artifacts"):
+                self.assertNotIn(secret, raw)
+            record = dayuan.load_private(self.client.record_path(rid))
+            self.assertEqual(record["result"]["task_id"], TASK["id"])
+            self.assertFalse(record["result"]["raw_messages_verified"])
+            self.assertIn("limitation", record["result"])
+
+    def test_pending_result_is_fetched_every_time_and_not_cached(self):
+        working = {**TASK, "status": {"state": "TASK_STATE_WORKING"}, "history": []}
+        with patch.object(self.client, "request", return_value=working) as request:
+            self.client.start(QUERY)
+            self.assertEqual(self.client.result(QUERY["request_id"])["state"], "working")
+            self.assertEqual(self.client.result(QUERY["request_id"])["state"], "working")
+        self.assertEqual([c.args[0] for c in request.call_args_list], ["POST", "GET", "GET"])
+        self.assertNotIn("result", dayuan.load_private(self.client.record_path(QUERY["request_id"])))
+
+    def test_cached_result_is_not_served_to_another_credential(self):
+        with patch.object(self.client, "request", return_value=TASK):
+            self.client.start(QUERY)
+            self.client.result(QUERY["request_id"])
+        self.assertIn("result", dayuan.load_private(self.client.record_path(QUERY["request_id"])))
+        other = dayuan.Client(self.root, token="different-account-token")
+        with patch("urllib.request.OpenerDirector.open") as network:
+            with self.assertRaisesRegex(dayuan.Error, "CREDENTIAL_CHANGED_OR_MISSING"):
+                other.result(QUERY["request_id"])
+        network.assert_not_called()
+
     def fake_clock(self):
         clock = {"now": 0.0}
         self.client.clock = lambda: clock["now"]
