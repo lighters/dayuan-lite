@@ -60,3 +60,5 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 ## PR 合并前离线回归（2026-10-20）
 
 新增真实子进程回归：假 CLI 输出 JSON 后关闭 stdout/stderr，延迟 2.3 秒退出；调用预算 10 秒时应保留完整结果。该测试在 PR #12 原实现上报 `WECOM_CLI_TIMEOUT`，修复后成功；既有预算 0.5 秒、退出延迟 1 秒的用例继续验证退出宽限。未测量真实 npm 启动器的退出延迟，本次没有使用真实凭据或发起联机业务查询。
+
+本次还分别在 PR #13、#14 版本运行 `scripts/check.py` 与完整离线测试，覆盖版本缓存、CLI 存在性检查、stderr 持续读空、Node 环境变量隔离、已有正文保护，以及同 ID 请求等待锁和恢复任务。三个改动组合后再次通过相同检查。新增行为没有新增联机验收证据。

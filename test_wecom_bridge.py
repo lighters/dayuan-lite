@@ -22,9 +22,10 @@ import json, os, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 if args == ['--version']:
+    with open(os.environ['FAKE_LOG'] + '.version', 'a') as f: f.write('checked\\n')
     print('wecom-cli ' + os.environ.get('FAKE_VERSION', '1.3.4'))
     sys.exit(0)
-entry = {'pid':os.getpid(), 'argv':args, 'has_token':os.environ.get('WECOM_CLI_ACCESS_TOKEN') == 'fresh-test-token', 'old_headers':any(k.startswith('WECOM_CLI_ADDITIONAL_HEADERS') for k in os.environ), 'config':os.environ.get('WECOM_CLI_CONFIG_DIR'), 'bot_file':(Path(os.environ['WECOM_CLI_CONFIG_DIR']) / 'credentials.enc').exists()}
+entry = {'pid':os.getpid(), 'argv':args, 'has_token':os.environ.get('WECOM_CLI_ACCESS_TOKEN') == 'fresh-test-token', 'old_headers':any(k.startswith('WECOM_CLI_ADDITIONAL_HEADERS') for k in os.environ), 'config':os.environ.get('WECOM_CLI_CONFIG_DIR'), 'node_options':os.environ.get('NODE_OPTIONS'), 'bot_file':(Path(os.environ['WECOM_CLI_CONFIG_DIR']) / 'credentials.enc').exists()}
 with open(os.environ['FAKE_LOG'], 'a') as f: f.write(json.dumps(entry)+'\\n')
 mode = os.environ.get('FAKE_MODE')
 if mode == 'timeout': time.sleep(5)
@@ -38,6 +39,11 @@ if mode == 'slow-exit':
 if mode == 'file':
     f=Path('content.txt'); f.write_text('large document body')
     print(json.dumps({'file_path':str(f.resolve())})); sys.exit(0)
+if mode == 'file-with-content':
+    f=Path('content.txt'); f.write_text('full body')
+    print(json.dumps({'content':'truncated…','file_path':str(f.resolve())})); sys.exit(0)
+if mode == 'stderr-large':
+    sys.stderr.write('log line\\n' * 20000); sys.stderr.flush()
 if mode == 'outside-file':
     print(json.dumps({'file_path':'/etc/passwd'})); sys.exit(0)
 if mode == 'invalid': print('not json'); sys.exit(0)
@@ -143,6 +149,40 @@ print(json.dumps({'errcode':0,'content':'test content','echo':os.environ.get('WE
         with patch.dict(os.environ, {'FAKE_MODE':'outside-file'}), patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
             with self.assertRaisesRegex(dayuan.Error, 'WECOM_CLI_INVALID_FILE'):
                 self.bridge().read('doc-read', {'docid':'d'})
+
+    def version_checks(self):
+        return len(Path(str(self.log) + '.version').read_text().splitlines())
+
+    def test_version_is_checked_once_per_binary_and_again_after_reinstall(self):
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            self.bridge().read('doc-read', {'docid':'d'})
+            self.bridge().read('doc-read', {'docid':'d'})
+            self.assertEqual(self.version_checks(), 1)
+            os.utime(self.binary, ns=(0, 0))
+            self.bridge().read('doc-read', {'docid':'d'})
+        self.assertEqual(self.version_checks(), 2)
+
+    def test_noisy_stderr_does_not_fail_the_read_and_is_not_returned(self):
+        with patch.dict(os.environ, {'FAKE_MODE':'stderr-large'}), patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            value = self.bridge().read('doc-read', {'docid':'d'})
+        self.assertEqual(value['data']['content'], 'test content')
+        self.assertNotIn('log line', json.dumps(value))
+
+    def test_node_injection_variables_are_not_inherited(self):
+        with patch.dict(os.environ, {'NODE_OPTIONS':'--require /tmp/evil.js'}), patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            self.bridge().read('doc-read', {'docid':'d'})
+        self.assertIsNone(json.loads(self.log.read_text().splitlines()[-1])['node_options'])
+
+    def test_inline_file_does_not_clobber_existing_content(self):
+        with patch.dict(os.environ, {'FAKE_MODE':'file-with-content'}), patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            value = self.bridge().read('doc-read', {'docid':'d'})
+        self.assertEqual(value['data'], {'content':'truncated…', 'file_content':'full body'})
+
+    def test_status_reports_cli_presence_without_starting_it(self):
+        self.assertEqual(dayuan.Client(self.root, token='t').status()['wecom_cli'], {'executable':str(self.binary), 'found':True})
+        with patch.dict(os.environ, {'DAYUAN_WECOM_CLI':str(self.root / 'missing')}):
+            self.assertFalse(dayuan.Client(self.root, token='t').status()['wecom_cli']['found'])
+        self.assertFalse(self.log.exists())
 
     def test_each_operation_uses_only_its_fixed_cli_command(self):
         cases = [('doc-search', {'keywords':['test']}, ['doc','search']), ('doc-read', {'docid':'d'}, ['doc','contents','get']), ('meeting-list', {'begin_time':'2026-10-15 00:00:00','end_time':'2026-10-15 23:59:59'}, ['meeting','list']), ('meeting-get', {'meeting_ids':[{'meeting_id':'m'}]}, ['meeting','get'])]

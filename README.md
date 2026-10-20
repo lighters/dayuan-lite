@@ -83,7 +83,7 @@ dayuan read --wait 60 --json '{"request_id":"search-project-001","operation":"se
 dayuan result --wait 60 read-project-001
 ```
 
-`--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。等待预算从首次提交/首次结果查询返回后开始；后续轮询的网络超时、授权请求和授权锁共享剩余预算，到时不再发起下一次轮询。首次请求耗时不计入 N；底层网络超时是 I/O 超时，不是整个进程的强制终止时间。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。同一 ID 正在提交时，并发调用返回 `REQUEST_BUSY`；稍后用原 ID 重试。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
+`--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。等待预算从首次提交/首次结果查询返回后开始；后续轮询的网络超时、授权请求和授权锁共享剩余预算，到时不再发起下一次轮询。首次请求耗时不计入 N；底层网络超时是 I/O 超时，不是整个进程的强制终止时间。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。同一 ID 正在提交时，并发调用最多等待 10 秒；对方已拿到任务则直接返回该任务的当前状态（不会再提交一次），仍未完成提交才返回 `REQUEST_BUSY`，稍后用原 ID 重试。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
 
 ## 文档和会议：企微 CLI 用户授权入口
 
@@ -105,7 +105,7 @@ dayuan wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回的
 
 每次调用先校验操作与参数、检查 CLI 版本，再调用云端授权模块检查缓存；临近到期时自动刷新账号/重新换取企微用户令牌。令牌只通过该次子进程的环境传递，不输出、不进入命令参数；连接器使用临时空配置目录，移除继承的 CLI 令牌、额外请求头及日志配置，不会回退到已有 Bot 凭据，也不会改动原有 Bot 配置。明确的令牌失效码 `853004` / `853005` 会触发一次重新换票和只读重试，其他失败直接返回机器码。
 
-可用 `--wecom-cli /absolute/path/to/wecom-cli` 指定受信任的官方可执行文件；CLI 和 MCP 也支持本机环境变量 `DAYUAN_WECOM_CLI`。这是程序路径，不是凭据。不要将任意脚本或上游返回的路径配置为 CLI。
+可用 `--wecom-cli /absolute/path/to/wecom-cli` 指定受信任的官方可执行文件；CLI 和 MCP 也支持本机环境变量 `DAYUAN_WECOM_CLI`。这是程序路径，不是凭据。不要将任意脚本或上游返回的路径配置为 CLI。`dayuan status` 的 `wecom_cli.found` 只检查该程序是否能找到，不启动它、不校验版本。
 
 | 操作 | 参数与限制 |
 | --- | --- |
@@ -116,7 +116,7 @@ dayuan wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回的
 
 搜索和列表支持 `limit`（默认 10，1–50）及 `cursor`；不会自动翻页。需要更多数据时使用返回游标再次请求，保留覆盖范围说明。JSON 可用 `--json -` 从标准输入读取；不接受任何透传 CLI 参数或写操作。
 
-返回 `{operation, source:"wecom_cli_user_token", read_only:true, data, limitation}`，业务数据在 `data`。CLI 可能将较长正文写入临时文件，连接器只读取该临时目录内的普通文件，将内容放回 `content` 后删除临时目录；不会返回已经失效的本地路径。输入最多 64KB、结果最多 2MiB，超限报错。CLI 调用总预算 60 秒，MCP 30 秒，包含版本检查、授权和子进程执行；超时终止整个 CLI 进程组。输出已完整读到、仅等待退出码时，保留剩余预算且至少给 2 秒退出宽限，不丢弃已读结果。底层云端 HTTP 的 I/O 超时仍受操作系统行为影响。
+返回 `{operation, source:"wecom_cli_user_token", read_only:true, data, limitation}`，业务数据在 `data`。CLI 可能将较长正文写入临时文件，连接器只读取该临时目录内的普通文件，将内容放回 `content`（已有该字段时放入 `file_content`）后删除临时目录；不会返回已经失效的本地路径。输入最多 64KB、结果最多 2MiB，超限报错。CLI 调用总预算 60 秒，MCP 30 秒，包含版本检查、授权和子进程执行；超时终止整个 CLI 进程组。输出已完整读到、仅等待退出码时，保留剩余预算且至少给 2 秒退出宽限，不丢弃已读结果。底层云端 HTTP 的 I/O 超时仍受操作系统行为影响。
 
 这是用户凭据的替代接入路径，没有延长 Bot 的七天权限。用户授权被撤销、refresh token 到期或刷新结果不确定时，仍需根据错误重新扫码；不能承诺永不重新授权。首批不含智能文档/表格正文、会议转写/录制或任何写接口。
 

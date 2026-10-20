@@ -92,6 +92,10 @@ def validate_query(value):
     return p
 
 
+def query_fingerprint(p):
+    return digest(json.dumps(p, sort_keys=True, ensure_ascii=False))
+
+
 def wait_seconds(value, limit):
     if type(value) is not int or not 0 <= value <= limit:
         raise Error("INVALID_WAIT_SECONDS")
@@ -210,6 +214,11 @@ class Client:
             from workbuddy_auth import CloudAuth
             cloud = CloudAuth(self.state).status()
             status.update(cloud_dependency=cloud['cloud_dependency'], auth_phase=cloud['phase'], automatic_renewal=cloud['refresh_credential_present'])
+        from wecom_bridge import default_executable
+        import shutil
+        executable = default_executable()
+        # Presence only: no process is started, so this says nothing about the CLI's version or the token.
+        status["wecom_cli"] = {"executable": executable, "found": shutil.which(executable) is not None}
         return status
 
     def prepare_auth(self):
@@ -259,26 +268,47 @@ class Client:
     def record_path(self, rid):
         return self.state / "requests" / (request_id(rid) + ".json")
 
+    # A concurrent call for the same request_id is usually a parallel agent duplicating a submit. Wait briefly for
+    # the holder, then hand back its task; only an unfinished submit is reported as busy.
+    REQUEST_LOCK_WAIT = 10
+
     def start(self, query):
         p = validate_query(query)
         locks = self.state / ".request-locks"
         private_dir(locks)
         fd = os.open(str(locks / (p["request_id"] + ".lock")), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise Error("REQUEST_BUSY") from None
+            end = self.clock() + self.REQUEST_LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if self.clock() >= end:
+                        return self.resume_busy(p)
+                    self.sleep(0.1)
             return self._start(p)
         finally:
             os.close(fd)
+
+    def resume_busy(self, p):
+        """The lock holder is still working. Return its task when it has one; never submit alongside it."""
+        try:
+            prior = load_private(self.record_path(p["request_id"]))
+        except FileNotFoundError:
+            raise Error("REQUEST_BUSY") from None
+        if prior["input_hash"] != query_fingerprint(p):
+            raise Error("REQUEST_CONFLICT")
+        if not prior.get("task_id"):
+            raise Error("REQUEST_BUSY")
+        return self.result(p["request_id"])
 
     def _start(self, p):
         self.prepare_auth()
         if not self.token:
             raise Error("AUTH_REQUIRED", definitive=True)
         path = self.record_path(p["request_id"])
-        fingerprint = digest(json.dumps(p, sort_keys=True, ensure_ascii=False))
+        fingerprint = query_fingerprint(p)
         record = {"request_id": p["request_id"], "input_hash": fingerprint, "credential_fingerprint": digest(self.token), "message_id": str(uuid.uuid4()), "created_at": now(), "state": "dispatching"}
         if self.identity:
             record['credential_identity'] = self.identity

@@ -111,8 +111,13 @@ def run_cli(argv, env, cwd, end):
                         selector.unregister(key.fileobj)
                         continue
                     index = key.data
-                    output[index].extend(block)
-                    if len(output[index]) > (MAX_RESPONSE if index == 0 else 65536):
+                    if index == 1:
+                        # stderr is never returned; keep draining it so the child cannot block, but stop storing it.
+                        if len(output[1]) < 65536:
+                            output[1].extend(block[:65536 - len(output[1])])
+                        continue
+                    output[0].extend(block)
+                    if len(output[0]) > MAX_RESPONSE:
                         raise Error("WECOM_CLI_RESPONSE_TOO_LARGE")
             # Both pipes reached EOF, so the complete output is in hand. Only the exit status is missing;
             # preserve the remaining budget, with a minimum grace if it has already run out.
@@ -142,10 +147,38 @@ def redact(value, token):
     return value
 
 
+MIN_CLI_VERSION = (1, 3, 4)
+# Starting the Node CLI costs hundreds of milliseconds; a long-lived MCP server would otherwise pay it
+# twice per read. Keyed by the binary's identity so a reinstall is noticed.
+_versions = {}
+
+
+def cli_version(executable, env, cwd, end):
+    info = os.stat(executable)
+    key = (executable, info.st_mtime_ns, info.st_size)
+    if key not in _versions:
+        code, raw = run_cli([executable, "--version"], env, cwd, end)
+        match = re.search(rb"wecom-cli (\d+)\.(\d+)\.(\d+)", raw)
+        if code or not match:
+            raise Error("WECOM_CLI_VERSION_UNSUPPORTED")
+        _versions[key] = tuple(int(x) for x in match.groups())
+    return _versions[key]
+
+
+def default_executable():
+    return os.environ.get("DAYUAN_WECOM_CLI", "wecom-cli")
+
+
+def child_env():
+    # Never inherit alternate tokens, bot configuration, custom endpoints or headers; NODE_OPTIONS /
+    # NODE_PATH could load code into a process that holds the user's token.
+    return {k: v for k, v in os.environ.items() if not k.startswith("WECOM_CLI_") and k not in ("DAYUAN_ACCESS_TOKEN", "NODE_OPTIONS", "NODE_PATH")}
+
+
 class Bridge:
     def __init__(self, state, executable=None, timeout=60):
         self.state = Path(state)
-        self.executable = executable or os.environ.get("DAYUAN_WECOM_CLI", "wecom-cli")
+        self.executable = executable or default_executable()
         if type(timeout) not in (int, float) or not 0 < timeout <= 120:
             raise Error("INVALID_WECOM_TIMEOUT")
         self.timeout = timeout
@@ -156,13 +189,10 @@ class Bridge:
         if not executable:
             raise Error("WECOM_CLI_NOT_FOUND")
         end = time.monotonic() + self.timeout
-        # Never inherit alternate tokens, bot configuration, custom endpoints or headers.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("WECOM_CLI_") and k != "DAYUAN_ACCESS_TOKEN"}
+        env = child_env()
         with tempfile.TemporaryDirectory(prefix="dayuan-wecom-") as temp:
             env["WECOM_CLI_CONFIG_DIR"] = temp
-            code, raw = run_cli([executable, "--version"], env, temp, end)
-            match = re.search(rb"wecom-cli (\d+)\.(\d+)\.(\d+)", raw)
-            if code or not match or tuple(int(x) for x in match.groups()) < (1, 3, 4):
+            if cli_version(executable, env, temp, end) < MIN_CLI_VERSION:
                 raise Error("WECOM_CLI_VERSION_UNSUPPORTED")
             flow = CloudAuth(self.state)
             flow.poll_deadline = end
@@ -221,7 +251,8 @@ def inline_files(value, root, budget=None, depth=0):
             if len(raw) > budget[0]:
                 raise Error("WECOM_CLI_RESPONSE_TOO_LARGE")
             budget[0] -= len(raw)
-            result["content"] = raw.decode("utf-8")
+            # The CLI may already have returned an inline (possibly truncated) content field; do not clobber it.
+            result["file_content" if "content" in result else "content"] = raw.decode("utf-8")
         except (OSError, UnicodeError):
             raise Error("WECOM_CLI_INVALID_FILE") from None
     return result

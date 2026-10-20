@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 import os
@@ -66,7 +67,50 @@ class DayuanTests(unittest.TestCase):
             self.assertEqual([c.args[0] for c in request.call_args_list], ["POST", "POST", "GET"])
         self.assertEqual(sorted(p.name for p in (self.root / "requests").iterdir()), ["test-query-001.json"])
 
+    def hold_request_lock(self, rid=QUERY["request_id"]):
+        fd = os.open(str(self.root / ".request-locks" / (rid + ".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(os.close, fd)
+        return fd
+
+    def test_busy_request_id_waits_then_returns_the_holders_task(self):
+        with patch.object(self.client, "request", return_value=TASK):
+            self.client.start(QUERY)
+        self.client.REQUEST_LOCK_WAIT = 0.3
+        dayuan.private_dir(self.root / ".request-locks")
+        self.hold_request_lock()
+        with patch.object(self.client, "request", return_value=TASK) as request:
+            value = self.client.start(QUERY)
+        self.assertEqual(value["task_id"], TASK["id"])
+        self.assertEqual([c.args[0] for c in request.call_args_list], ["GET"])
+        with self.assertRaisesRegex(dayuan.Error, "REQUEST_CONFLICT"):
+            self.client.start({**QUERY, "chat": "另一个群"})
+
+    def test_busy_request_id_without_task_is_reported_busy(self):
+        self.client.REQUEST_LOCK_WAIT = 0.3
+        dayuan.private_dir(self.root / ".request-locks")
+        self.hold_request_lock()
+        with patch.object(self.client, "request", return_value=TASK) as request:
+            with self.assertRaisesRegex(dayuan.Error, "REQUEST_BUSY"):
+                self.client.start(QUERY)
+            dayuan.save_private(self.client.record_path(QUERY["request_id"]), {"request_id": QUERY["request_id"], "input_hash": dayuan.query_fingerprint(dayuan.validate_query(QUERY)), "credential_fingerprint": dayuan.digest("test-private-token"), "state": "dispatching"})
+            with self.assertRaisesRegex(dayuan.Error, "REQUEST_BUSY"):
+                self.client.start(QUERY)
+        request.assert_not_called()
+
+    def test_lock_released_during_wait_lets_the_submit_proceed(self):
+        dayuan.private_dir(self.root / ".request-locks")
+        fd = self.hold_request_lock()
+        timer = threading.Timer(0.3, fcntl.flock, (fd, fcntl.LOCK_UN))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        with patch.object(self.client, "request", return_value=TASK) as request:
+            value = self.client.start(QUERY)
+        self.assertEqual(value["task_id"], TASK["id"])
+        self.assertEqual([c.args[0] for c in request.call_args_list], ["POST"])
+
     def test_concurrent_rejected_retries_submit_only_once(self):
+        self.client.REQUEST_LOCK_WAIT = 0.3
         with patch.object(self.client, "request", side_effect=dayuan.Error("AUTH_REQUIRED", definitive=True)):
             self.client.start(QUERY)
         loaded = threading.Event()
