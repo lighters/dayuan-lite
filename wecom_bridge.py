@@ -115,9 +115,9 @@ def run_cli(argv, env, cwd, end):
                     if len(output[index]) > (MAX_RESPONSE if index == 0 else 65536):
                         raise Error("WECOM_CLI_RESPONSE_TOO_LARGE")
             # Both pipes reached EOF, so the complete output is in hand. Only the exit status is missing;
-            # give it a short fixed grace instead of the remaining budget, which may already be zero.
+            # preserve the remaining budget, with a minimum grace if it has already run out.
             try:
-                code = process.wait(timeout=EXIT_GRACE)
+                code = process.wait(timeout=max(EXIT_GRACE, end - time.monotonic()))
             except subprocess.TimeoutExpired:
                 raise Error("WECOM_CLI_TIMEOUT") from None
         return code, bytes(output[0])

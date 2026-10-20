@@ -33,7 +33,7 @@ if mode == 'stderr': print(os.environ.get('WECOM_CLI_ACCESS_TOKEN'), file=sys.st
 if mode == 'slow-exit':
     print(json.dumps({'errcode':0,'content':'late exit'}), flush=True)
     os.close(1); os.close(2)
-    time.sleep(1)
+    time.sleep(float(os.environ.get('FAKE_EXIT_DELAY', '1')))
     sys.exit(0)
 if mode == 'file':
     f=Path('content.txt'); f.write_text('large document body')
@@ -106,6 +106,14 @@ print(json.dumps({'errcode':0,'content':'test content','echo':os.environ.get('WE
         with patch.dict(os.environ, {'FAKE_MODE':'slow-exit', 'FAKE_LOG':str(self.log), 'WECOM_CLI_CONFIG_DIR':str(self.root)}):
             # Budget covers the output but not the lingering exit; the output must still be returned.
             code, raw = run_cli([str(self.binary), 'doc', 'contents', 'get'], dict(os.environ), str(self.root), time.monotonic() + 0.5)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(raw)['content'], 'late exit')
+
+    def test_exit_grace_preserves_a_longer_remaining_budget(self):
+        from wecom_bridge import run_cli
+        import time
+        with patch.dict(os.environ, {'FAKE_MODE':'slow-exit', 'FAKE_EXIT_DELAY':'2.3', 'WECOM_CLI_CONFIG_DIR':str(self.root)}):
+            code, raw = run_cli([str(self.binary), 'doc', 'contents', 'get'], dict(os.environ), str(self.root), time.monotonic() + 10)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(raw)['content'], 'late exit')
 
