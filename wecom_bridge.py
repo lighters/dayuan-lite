@@ -86,6 +86,9 @@ def parameters(operation, value):
     return p
 
 
+EXIT_GRACE = 2
+
+
 def run_cli(argv, env, cwd, end):
     output = [bytearray(), bytearray()]
     if time.monotonic() >= end:
@@ -116,8 +119,10 @@ def run_cli(argv, env, cwd, end):
                     output[0].extend(block)
                     if len(output[0]) > MAX_RESPONSE:
                         raise Error("WECOM_CLI_RESPONSE_TOO_LARGE")
+            # Both pipes reached EOF, so the complete output is in hand. Only the exit status is missing;
+            # preserve the remaining budget, with a minimum grace if it has already run out.
             try:
-                code = process.wait(timeout=max(0, end - time.monotonic()))
+                code = process.wait(timeout=max(EXIT_GRACE, end - time.monotonic()))
             except subprocess.TimeoutExpired:
                 raise Error("WECOM_CLI_TIMEOUT") from None
         return code, bytes(output[0])
