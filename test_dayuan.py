@@ -446,7 +446,17 @@ class ReceiptMaintenanceTests(unittest.TestCase):
         self.assertEqual(value["state_dir"], str(self.root))
         self.assertFalse((self.root / "credentials.json").exists())
 
-    def test_gc_previews_then_deletes_only_old_terminal_receipts_and_their_locks(self):
+    def test_list_skips_receipts_removed_during_the_scan(self):
+        rid = "removed-during-scan"
+        self.receipt(rid, "completed", "2020-01-01T00:00:00+00:00")
+        load = dayuan.load_private
+        def removed(path):
+            path.unlink()
+            return load(path)
+        with patch("dayuan.load_private", side_effect=removed):
+            self.assertEqual(dayuan.list_receipts(self.root), [])
+
+    def test_gc_previews_then_deletes_only_old_terminal_receipts_and_keeps_locks(self):
         old, recent = "2020-01-01T00:00:00+00:00", dayuan.now()
         for rid, state in [("old-completed-01", "completed"), ("old-failed-0001", "failed"), ("old-cancelled-1", "cancelled"), ("old-rejected-01", "rejected")]:
             self.receipt(rid, state, old, task_id=None if state == "rejected" else "task_" + rid)
@@ -462,12 +472,88 @@ class ReceiptMaintenanceTests(unittest.TestCase):
         self.assertEqual(sorted(r["request_id"] for r in preview["receipts"]), ["old-cancelled-1", "old-completed-01", "old-failed-0001", "old-nolock-0001", "old-rejected-01"])
         self.assertEqual(preview["skipped_busy"], [])
         self.assertEqual(sorted(p.name for p in (self.root / "requests").iterdir()), before)
+        self.assertFalse((self.root / ".request-locks" / "old-nolock-0001.lock").exists())
         applied = dayuan.gc_receipts(self.root, 30, apply=True)
         self.assertFalse(applied["dry_run"])
         self.assertEqual(sorted(r["request_id"] for r in applied["receipts"]), sorted(r["request_id"] for r in preview["receipts"]))
         self.assertEqual(sorted(p.stem for p in (self.root / "requests").iterdir()), ["new-completed-1", "old-dispatch-01", "old-submitted-1", "old-unknown-001", "old-working-001"])
-        self.assertEqual(sorted(p.stem for p in (self.root / ".request-locks").iterdir()), ["new-completed-1", "old-dispatch-01", "old-submitted-1", "old-unknown-001", "old-working-001"])
+        self.assertEqual(sorted(p.stem for p in (self.root / ".request-locks").iterdir()), sorted(p.removesuffix(".json") for p in before))
         self.assertEqual(dayuan.gc_receipts(self.root, 30, apply=True)["receipts"], [])
+
+    def test_gc_rechecks_retried_receipts_after_taking_the_lock(self):
+        client = dayuan.Client(self.root, token="test-private-token")
+        listing = dayuan.list_receipts
+        for uncertain in (False, True):
+            with self.subTest(uncertain=uncertain):
+                rid = QUERY["request_id"] + ("-unknown" if uncertain else "-submitted")
+                query = {**QUERY, "request_id": rid}
+                with patch.object(client, "request", side_effect=dayuan.Error("AUTH_REQUIRED", definitive=True)):
+                    client.start(query)
+                path = client.record_path(rid)
+                record = dayuan.load_private(path)
+                record["created_at"] = "2020-01-01T00:00:00+00:00"
+                dayuan.save_private(path, record)
+                def snapshot_then_retry(state):
+                    snapshot = listing(state)
+                    response = dayuan.Error("TRANSPORT_ERROR") if uncertain else {**TASK, "status": {"state": "TASK_STATE_SUBMITTED"}}
+                    with patch.object(client, "request", side_effect=[response]) as request:
+                        client.start(query)
+                    self.assertEqual([c.args[0] for c in request.call_args_list], ["POST"])
+                    return snapshot
+                with patch("dayuan.list_receipts", side_effect=snapshot_then_retry):
+                    value = dayuan.gc_receipts(self.root, 30, apply=True)
+                self.assertEqual(value["receipts"], [])
+                self.assertEqual(dayuan.load_private(path)["state"], "outcome_unknown" if uncertain else "submitted")
+
+    def test_gc_rechecks_age_after_taking_the_lock(self):
+        rid = "recent-replaced-01"
+        self.receipt(rid, "completed", "2020-01-01T00:00:00+00:00")
+        listing = dayuan.list_receipts
+        def snapshot_then_replace(state):
+            snapshot = listing(state)
+            self.receipt(rid, "completed", dayuan.now())
+            return snapshot
+        with patch("dayuan.list_receipts", side_effect=snapshot_then_replace):
+            self.assertEqual(dayuan.gc_receipts(self.root, 30, apply=True)["receipts"], [])
+        self.assertTrue((self.root / "requests" / (rid + ".json")).exists())
+
+    def test_gc_keeps_the_lock_inode_used_by_waiting_starters(self):
+        rid = "waiting-starter-01"
+        self.receipt(rid, "completed", "2020-01-01T00:00:00+00:00")
+        lock = self.root / ".request-locks" / (rid + ".lock")
+        waiting = os.open(str(lock), os.O_RDWR)
+        self.addCleanup(os.close, waiting)
+        inode = os.fstat(waiting).st_ino
+        dayuan.gc_receipts(self.root, 30, apply=True)
+        self.assertTrue(lock.exists())
+        self.assertEqual(lock.stat().st_ino, inode)
+        fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        other = os.open(str(lock), os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, other)
+        with self.assertRaises(BlockingIOError):
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_gc_creates_a_missing_lock_before_rechecking_and_deleting(self):
+        rid = "missing-lock-0001"
+        self.receipt(rid, "completed", "2020-01-01T00:00:00+00:00", lock=False)
+        load = dayuan.load_private
+        calls = []
+        def inspect_lock(path):
+            if calls:
+                lock = self.root / ".request-locks" / (rid + ".lock")
+                fd = os.open(str(lock), os.O_RDWR)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(fd)
+            calls.append(path)
+            return load(path)
+        with patch("dayuan.load_private", side_effect=inspect_lock):
+            value = dayuan.gc_receipts(self.root, 30, apply=True)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual([entry["request_id"] for entry in value["receipts"]], [rid])
+        self.assertTrue((self.root / ".request-locks" / (rid + ".lock")).exists())
 
     def test_gc_skips_a_receipt_whose_lock_is_held(self):
         old = "2020-01-01T00:00:00+00:00"
@@ -482,7 +568,7 @@ class ReceiptMaintenanceTests(unittest.TestCase):
         self.assertTrue((self.root / "requests" / "held-completed-1.json").exists())
         self.assertTrue((self.root / ".request-locks" / "held-completed-1.lock").exists())
         self.assertFalse((self.root / "requests" / "free-completed-1.json").exists())
-        self.assertFalse((self.root / ".request-locks" / "free-completed-1.lock").exists())
+        self.assertTrue((self.root / ".request-locks" / "free-completed-1.lock").exists())
 
     def test_gc_cli_requires_days_suffix_and_yes_to_delete(self):
         self.receipt("old-completed-01", "completed", "2020-01-01T00:00:00+00:00")
@@ -500,7 +586,7 @@ class ReceiptMaintenanceTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(value["dry_run"])
         self.assertFalse((self.root / "requests" / "old-completed-01.json").exists())
-        self.assertFalse((self.root / ".request-locks" / "old-completed-01.lock").exists())
+        self.assertTrue((self.root / ".request-locks" / "old-completed-01.lock").exists())
 
     def test_maintenance_commands_are_not_mcp_tools(self):
         self.assertEqual([t["name"] for t in dayuan.TOOLS], ["dayuan_status", "dayuan_read_start", "dayuan_read_result"])

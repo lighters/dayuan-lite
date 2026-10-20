@@ -181,7 +181,7 @@ dayuan wecom-login --open
 dayuan renew
 ```
 
-任务一旦进入 `completed` / `failed` / `cancelled` / `rejected`，连接器会把整理后的结果（`text`、`task_id`、`limitation` 等字段，不含凭据和上游原始响应）写进该 `request_id` 的本地回执；之后对同一 ID 的 `result` / `dayuan_read_result` 直接返回这份副本，不再向企业微信发请求。仍在 `submitted` / `working` 的任务每次都会联网查询。缓存只对同一账号身份有效，身份变化仍返回 `CREDENTIAL_CHANGED_OR_MISSING`；用 `dayuan gc` 删除回执后，该结果也随之删除。
+`result` 查询到任务进入 `completed` / `failed` / `cancelled` / `rejected` 后，连接器会把整理后的结果（`text`、`task_id`、`limitation` 等字段，不含凭据和上游原始响应）写进该 `request_id` 的本地回执；之后对同一 ID 的 `result` / `dayuan_read_result` 直接返回这份副本，不再向企业微信 A2A 查询任务；授权预检仍会执行，必要时可能续期。仍在 `submitted` / `working` 的任务每次都会联网查询。缓存只对同一账号身份有效，身份变化仍返回 `CREDENTIAL_CHANGED_OR_MISSING`；用 `dayuan gc` 删除回执后，该结果也随之删除。
 
 缺少 refresh token、长期授权到期或撤销时，需要重新授权。刷新请求发出后结果不确定时，客户端会停止自动重放并报告 `REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED`；重新运行 `login` 恢复。请求发出前就失败的情况（等待预算耗尽 `WAIT_TIMEOUT`、域名解析失败或连接被拒 `TRANSPORT_NOT_SENT`）不会进入该状态，稍后再试即可。不要把旧凭据文件覆盖回去。
 
@@ -198,11 +198,11 @@ dayuan list --state working
 
 # 先预览：30 天前创建、且已到终态的回执
 dayuan gc --older-than 30d
-# 确认后真正删除回执及其锁文件
+# 确认后真正删除回执，保留锁文件
 dayuan gc --older-than 30d --yes
 ```
 
-`gc` 只删除 `completed` / `failed` / `cancelled` / `rejected` 的回执；`dispatching`、`submitted`、`working`、`outcome_unknown` 等状态一律保留，因为它们可能仍在进行或需要人工判断。删除前必须能立即拿到该 `request_id` 的进程锁，拿不到的回执会列在 `skipped_busy` 中并跳过。`--older-than` 必须写成 `Nd`（N 为天数）。被删除的 `request_id` 之后再提交会被当作新任务。
+`gc` 只删除 `completed` / `failed` / `cancelled` / `rejected` 的回执；`dispatching`、`submitted`、`working`、`outcome_unknown` 等状态一律保留，因为它们可能仍在进行或需要人工判断。实际删除前会创建缺失的锁文件，并且必须能立即拿到该 `request_id` 的进程锁，拿不到的回执会列在 `skipped_busy` 中并跳过；持锁后重新读取回执并检查终态及创建时间，避免误删已重试的活动任务。锁文件永久保留，避免等待中的进程使用不同锁实例；预览不创建锁文件。`--older-than` 必须写成 `Nd`（N 为天数）。被删除的 `request_id` 之后再提交会被当作新任务。
 
 ## 数据与权限
 
