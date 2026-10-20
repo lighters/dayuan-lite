@@ -13,6 +13,9 @@ RUNTIME = {"dayuan.py": ("qyapi.weixin.qq.com", "request"), "workbuddy_auth.py":
 FORBIDDEN_IMPORTS = {"http", "socket", "ssl", "subprocess", "multiprocessing", "ftplib", "smtplib", "xmlrpc", "ctypes", "pickle", "asyncio"}
 HTTP_CALLS = {"urlopen", "build_opener", "OpenerDirector"}
 READ_OPERATIONS = ["search_groups", "read_chat", "search_messages"]
+# Each bridge operation maps to exactly this read-only CLI subcommand; nothing else may be spawned.
+BRIDGE_OPERATIONS = {"doc-search": ("doc", "search"), "doc-read": ("doc", "contents", "get"), "meeting-list": ("meeting", "list"), "meeting-get": ("meeting", "get")}
+TEST_FILE = re.compile(r"\btest_\w+\.py\b")
 TEST_COUNT = re.compile(r"\d+\s*(?:项|个)(?:离线)?(?:测试|用例)")
 # Wording rules from AGENTS.md; applies to every tracked text file except the rule sources themselves.
 FORBIDDEN_TERMS = {"大圆": "the product name is 大渊", "逆向": "describe what the project does, not how its interfaces were obtained", "反编译": "describe what the project does, not how its interfaces were obtained"}
@@ -110,10 +113,29 @@ def check_contract():
     pyproject = (ROOT / "pyproject.toml").read_text()
     if re.search(r"(?m)^version\s*=\s*\"", pyproject) or 'version = {attr = "dayuan.__version__"}' not in pyproject:
         report(ROOT / "pyproject.toml", 1, "version must be dynamic from dayuan.__version__, not a second literal")
-    for path in [ROOT / "dayuan.py", ROOT / "workbuddy_auth.py"]:
+    for name in sorted(LOCAL_MODULES):
+        path = ROOT / (name + ".py")
         for number, line in enumerate(path.read_text().splitlines(), 1):
             if re.search(r"dayuan-lite/\d|\"version\":\s*\"\d", line):
                 report(path, number, "hard-coded project version; use dayuan.__version__")
+    try:
+        import wecom_bridge
+    except ImportError as exc:
+        report(ROOT / "wecom_bridge.py", 1, "cannot import with the standard library alone: %s" % exc)
+        return
+    if wecom_bridge.OPERATIONS != BRIDGE_OPERATIONS:
+        report(ROOT / "wecom_bridge.py", 1, "bridge operations changed to %s; only %s are allowed" % (wecom_bridge.OPERATIONS, BRIDGE_OPERATIONS))
+    if wecom_bridge.TOOL["inputSchema"]["properties"]["operation"]["enum"] != list(BRIDGE_OPERATIONS):
+        report(ROOT / "wecom_bridge.py", 1, "dayuan_wecom_read operation enum must list exactly the allowed bridge operations")
+
+
+def check_test_commands():
+    """AGENTS.md, CI and the repository must agree on which test files exist and run."""
+    actual = sorted(p.name for p in ROOT.glob("test_*.py"))
+    for path in [ROOT / "AGENTS.md", ROOT / ".github" / "workflows" / "ci.yml"]:
+        listed = [sorted(TEST_FILE.findall(line)) for line in path.read_text().splitlines() if "-m unittest" in line]
+        if not listed or any(files != actual for files in listed):
+            report(path, 1, "unittest command must list exactly the repository's test files: %s" % " ".join(actual))
 
 
 def check_docs():
@@ -142,6 +164,7 @@ def main():
     for path in python_files():
         check_python(path, stdlib)
     check_contract()
+    check_test_commands()
     check_docs()
     check_terms()
     for line in problems:
