@@ -120,7 +120,9 @@ class CloudAuth:
     def save(self, doc):
         save_private(self.path, doc)
 
-    def http(self, method, path, auth=None, refresh=None):
+    def http(self, method, path, auth=None, refresh=None, before_send=None):
+        """before_send runs after every local check, immediately before the request leaves: callers use it to
+        persist state that only matters once the server may have seen the request."""
         allowed = (
             (method == 'POST' and path in [PREFIX+'/auth/state?platform=workbuddy', PREFIX+'/auth/token/refresh']) or
             (method == 'GET' and (path == PREFIX+'/account' or re.fullmatch(r'/v2/plugin/auth/token\?state=[A-Za-z0-9_%.-]+', path))) or
@@ -133,8 +135,10 @@ class CloudAuth:
             headers['X-Refresh-Token'] = secret(refresh)
             headers['X-Auth-Refresh-Source'] = 'plugin'
         req = urllib.request.Request(ORIGIN+path, method=method, headers=headers, data=b'{}' if method == 'POST' else None)
+        timeout = self.timeout(25)
+        if before_send: before_send()
         try:
-            with urllib.request.build_opener(NoRedirect()).open(req, timeout=self.timeout(25)) as response:
+            with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
                 raw = response.read(1024*1024+1)
         except urllib.error.HTTPError as exc:
             # Preserve machine codes only; never reflect a server body with secrets.
@@ -142,7 +146,13 @@ class CloudAuth:
             except (ValueError, AttributeError): code = None
             if code in (11217,12151): raise AuthError('PENDING_'+str(code)) from None
             raise AuthError('HTTP_'+str(exc.code)+(('_CODE_'+str(code)) if isinstance(code, int) else '')) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except urllib.error.URLError as exc:
+            # Name resolution and connection refusal fail before a single byte is sent, so the
+            # server cannot have acted on the request. Anything later stays uncertain.
+            if isinstance(exc.reason, ConnectionRefusedError) or type(exc.reason).__name__ in ('gaierror', 'herror'):
+                raise AuthError('TRANSPORT_NOT_SENT') from None
+            raise AuthError('TRANSPORT_UNCERTAIN') from None
+        except (TimeoutError, OSError):
             raise AuthError('TRANSPORT_UNCERTAIN') from None
         if len(raw) > 1024*1024: raise AuthError('RESPONSE_TOO_LARGE')
         try: body = json.loads(raw)
@@ -221,12 +231,17 @@ class CloudAuth:
         if expiration and expiration <= timestamp():
             d['phase']='login_required'; self.save(d)
             raise AuthError('LOGIN_REQUIRED_REFRESH_EXPIRED')
-        # A lost response can have rotated the credential. Never blindly replay it.
-        d['phase']='refresh_unknown'; self.save(d)
-        try: value = self.http('POST',PREFIX+'/auth/token/refresh',auth=d['auth'],refresh=token)
+        previous = d['phase']
+        def mark_unknown():
+            # A lost response can have rotated the credential. Never blindly replay it.
+            d['phase']='refresh_unknown'; self.save(d)
+        try: value = self.http('POST',PREFIX+'/auth/token/refresh',auth=d['auth'],refresh=token,before_send=mark_unknown)
         except AuthError as exc:
             if str(exc).startswith(('HTTP_401','HTTP_403')):
                 d['phase']='login_required'; self.save(d)
+            elif str(exc) == 'TRANSPORT_NOT_SENT' and d['phase'] == 'refresh_unknown':
+                # The refresh token was never consumed; the next call may try again.
+                d['phase']=previous; self.save(d)
             raise
         d.update(auth=normalize_auth(value),phase='pending_account')
         self.save(d)

@@ -1,9 +1,11 @@
-import json
 import io
+import json
+import socket
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,8 @@ class CloudAuthTests(unittest.TestCase):
 
     def http(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
+        if kwargs.get('before_send'):
+            kwargs['before_send']()
         value = self.responses.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -93,6 +97,45 @@ class CloudAuthTests(unittest.TestCase):
         with self.assertRaisesRegex(auth.AuthError, 'REFRESH_OUTCOME_UNKNOWN'):
             self.flow.ensure_wecom()
         self.assertEqual(len(self.calls), 1)
+
+    def expired_account(self):
+        self.ready()
+        d = self.flow.load(); d['auth']['expiresAt'] = 1; self.flow.save(d)
+
+    def test_exhausted_wait_budget_does_not_mark_refresh_unknown(self):
+        self.expired_account()
+        flow = auth.CloudAuth(self.flow.state)
+        ticks = iter([0.0, 0.0, 50.0])  # lock acquired in time; budget gone when http() computes its timeout
+        flow.clock = lambda: next(ticks, 50.0)
+        flow.poll_deadline = 10.0
+        with patch("urllib.request.OpenerDirector.open") as network:
+            with self.assertRaisesRegex(auth.AuthError, 'WAIT_TIMEOUT'): flow.ensure_wecom()
+        network.assert_not_called()
+        self.assertEqual(flow.load()['phase'], 'ready')
+        self.responses = [{'accessToken':'new','refreshToken':'r2','expiresIn':7200}, {'uid':'u1','enterpriseId':'e1'}, {'access_token':'w1','expires_in':7200,'alias_id':'wu1','src_tid':'wc1'}]
+        self.assertEqual(self.flow.ensure_wecom()['access_token'], 'w1')
+        self.assertTrue(self.calls[0][1].endswith('/auth/token/refresh'))
+
+    def test_dns_or_connect_failure_before_send_keeps_refresh_replayable(self):
+        for reason in [socket.gaierror(8, 'nodename nor servname provided'), ConnectionRefusedError(61, 'Connection refused')]:
+            with self.subTest(reason=type(reason).__name__):
+                self.expired_account()
+                flow = auth.CloudAuth(self.flow.state)
+                with patch("urllib.request.OpenerDirector.open", side_effect=urllib.error.URLError(reason)) as network:
+                    with self.assertRaisesRegex(auth.AuthError, 'TRANSPORT_NOT_SENT'): flow.ensure_wecom()
+                self.assertEqual(network.call_count, 1)
+                self.assertEqual(flow.load()['phase'], 'ready')
+                self.assertEqual(flow.load()['auth']['refreshToken'], 'refresh-1')
+
+    def test_failure_after_send_still_blocks_replay(self):
+        self.expired_account()
+        flow = auth.CloudAuth(self.flow.state)
+        for reason in [urllib.error.URLError(ConnectionResetError(54, 'reset')), TimeoutError()]:
+            with self.subTest(reason=type(reason).__name__):
+                d = flow.load(); d['phase'] = 'ready'; flow.save(d)
+                with patch("urllib.request.OpenerDirector.open", side_effect=reason):
+                    with self.assertRaisesRegex(auth.AuthError, 'TRANSPORT_UNCERTAIN'): flow.ensure_wecom()
+                self.assertEqual(flow.load()['phase'], 'refresh_unknown')
 
     def test_refresh_cannot_change_account(self):
         self.ready()
