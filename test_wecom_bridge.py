@@ -27,7 +27,13 @@ if args == ['--version']:
     sys.exit(0)
 entry = {'pid':os.getpid(), 'argv':args, 'has_token':os.environ.get('WECOM_CLI_ACCESS_TOKEN') == 'fresh-test-token', 'old_headers':any(k.startswith('WECOM_CLI_ADDITIONAL_HEADERS') for k in os.environ), 'config':os.environ.get('WECOM_CLI_CONFIG_DIR'), 'node_options':os.environ.get('NODE_OPTIONS'), 'bot_file':(Path(os.environ['WECOM_CLI_CONFIG_DIR']) / 'credentials.enc').exists()}
 with open(os.environ['FAKE_LOG'], 'a') as f: f.write(json.dumps(entry)+'\\n')
+if os.environ.get('FAKE_RESPONSE'):
+    print(os.environ['FAKE_RESPONSE']); sys.exit(0)
 mode = os.environ.get('FAKE_MODE')
+if mode == 'json-spool':
+    f=Path('query.json'); f.write_text('x'*2200000 if os.environ['FAKE_SPOOL']=='oversize' else os.environ['FAKE_SPOOL'])
+    print(json.dumps({'file_path':str(f.resolve())})); sys.exit(0)
+
 if mode == 'timeout': time.sleep(5)
 if mode == 'large': print('x'*2200000); sys.exit(0)
 if mode == 'stderr': print(os.environ.get('WECOM_CLI_ACCESS_TOKEN'), file=sys.stderr); sys.exit(1)
@@ -203,3 +209,207 @@ print(json.dumps({'errcode':0,'content':'test content','echo':os.environ.get('WE
             dayuan.serve(self.root)
         reply=json.loads(output.getvalue())
         self.assertEqual(json.loads(reply['result']['content'][0]['text'])['data']['content'], 'test content')
+
+    def domain_cases(self):
+        window = {'begin_time':'2026-10-22 00:00:00','end_time':'2026-10-23 00:00:00'}
+        return [
+            ('contact-search', {'keywords':['测试']}, ['contact','users','search'], {'keywords':['测试']}),
+            ('calendar-list', window, ['calendar','schedules','list'], window),
+            ('calendar-get', {'schedule_ids':['s1']}, ['calendar','schedules','get'], {'schedule_ids':['s1']}),
+            ('mail-search', window, ['mail','search'], dict(window, limit=10)),
+            ('mail-get', {'mail_ids':['m1']}, ['mail','get'], {'mail_ids':['m1']}),
+            ('disk-list', {}, ['disk','files','list'], {'limit':10}),
+            ('disk-search', {'file_types':['smartsheet']}, ['disk','files','search'], {'file_types':['smartsheet'],'limit':10}),
+            ('disk-get', {'file_id':'f1'}, ['disk','files','get'], {'file_id':'f1'}),
+            ('sheet-get', {'docid':'e3_test'}, ['sheet','get'], {'docid':'e3_test'}),
+            ('sheet-read', {'docid':'e3_test','sheet':'s1','range':'A1:C3'}, ['sheet','cells','get'], {'docid':'e3_test','sheet':'s1','range':'A1:C3'}),
+            ('smartsheet-sheets', {'docid':'e3_test'}, ['smartsheet','sheets','list'], {'docid':'e3_test'}),
+            ('smartsheet-fields', {'docid':'e3_test','sheet_title':'任务'}, ['smartsheet','fields','list'], {'docid':'e3_test','sheet_title':'任务','limit':10}),
+            ('smartsheet-records', {'docid':'e3_test','sheet_id':'s1','cursor':'next'}, ['smartsheet','records','list'], {'docid':'e3_test','sheet_id':'s1','cursor':'next','limit':10}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'任务','field_titles':['事项','状态'],'limit':2}, ['smartsheet','records','query'], {'docid':'e3_test','sql':['SELECT `事项`, `状态` FROM `任务` LIMIT 2']}),
+        ]
+
+    def test_new_domains_use_fixed_commands_and_bounded_parameters(self):
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for operation, params, command, expected in self.domain_cases():
+                fixture = {'errcode':0,'values':[{'columns':['事项'], 'rows':[{'事项':'样本'}]}]} if operation == 'smartsheet-query' else {'errcode':0,'items':[{'name':'sample'}]}
+                with self.subTest(operation=operation), patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps(fixture)}):
+                    value = self.bridge().read(operation, params)
+                    entry = json.loads(self.log.read_text().splitlines()[-1])
+                    self.assertEqual(entry['argv'][:-2], command)
+                    self.assertEqual(entry['argv'][-2], '--json')
+                    self.assertEqual(json.loads(entry['argv'][-1]), expected)
+                    self.assertEqual(value['data'], fixture)
+                    self.assertTrue(entry['has_token'])
+                    self.assertFalse(entry['bot_file'])
+                    self.assertFalse(entry['old_headers'])
+                    self.assertFalse(Path(entry['config']).exists())
+                    self.assertNotIn('fresh-test-token', json.dumps(entry['argv']))
+
+    def test_domain_rejections_happen_before_auth_and_child_start(self):
+        window = {'begin_time':'2026-10-22 00:00:00','end_time':'2026-10-23 00:00:00'}
+        cases = [
+            ('contact-search', {'keywords':[]}), ('contact-search', {'keywords':['x']*11}),
+            ('calendar-list', {}), ('calendar-list', dict(window, limit=1)),
+            ('calendar-list', dict(window, end_time='2027-10-22 00:00:00')),
+            ('calendar-list', dict(window, end_time='2026-10-22 00:00:00')),
+            ('calendar-list', dict(window, begin_time='2026-02-30 00:00:00')),
+            ('calendar-get', {'schedule_ids':['s']*11}),
+            ('mail-search', {'limit':10}), ('mail-search', dict(window, limit=True)),
+            ('mail-search', dict(window, begin_time='2026-10-22T00:00:00Z')),
+            ('mail-get', {'mail_ids':[]}), ('mail-get', {'mail_ids':['m'],'download_attachments':True}),
+            ('disk-download', {'file_id':'f'}), ('mail-attachment', {'media_id':'x'}),
+            ('disk-list', {'limit':51}), ('disk-list', {'cursor':123}),
+            ('disk-search', {}), ('disk-search', {'file_types':['unsupported']}),
+            ('disk-get', {'file_id':'f','output':'/tmp/out'}),
+            ('sheet-read', {'docid':'e3_test','full':True}),
+            ('sheet-read', {'docid':'e3_test','range':'A:C'}),
+            ('sheet-read', {'docid':'e3_test','range':'C3:A1'}),
+            ('sheet-read', {'docid':'e3_test','range':'A0:C3'}),
+            ('sheet-read', {'docid':'e3_test','range':'A1:ZZ100'}),
+            ('sheet-read', {'docid':'e3_test','range':'A1','value':'write'}),
+            ('smartsheet-fields', {'docid':'e3_test'}),
+            ('smartsheet-records', {'docid':'e3_test','sheet_id':'s','sheet_title':'t'}),
+            ('smartsheet-records', {'docid':'e3_test','sheet_id':'s','field_titles':['x']}),
+            ('smartsheet-records', {'docid':'e3_test','sheet_id':'s','sql':['DELETE FROM x']}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'s','field_titles':[]}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'s` WHERE 1=1; --','field_titles':['x']}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'s','field_titles':['x` FROM t; --']}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'s\\','field_titles':['x']}),
+            ('smartsheet-query', {'docid':'e3_test','sheet_title':'s','field_titles':['x'],'limit':0}),
+            ('contact-search', {'keywords':['x\nsecret']}),
+        ]
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom') as auth:
+            for op, params in cases:
+                with self.subTest(operation=op, params=params), self.assertRaises(dayuan.Error):
+                    self.bridge().read(op, params)
+        auth.assert_not_called()
+        self.assertFalse(self.log.exists())
+        self.assertFalse(Path(str(self.log)+'.version').exists())
+
+    def test_smart_query_normalizes_both_cli_response_encodings(self):
+        table = {'columns':['事项'],'rows':[{'事项':'样本'}]}
+        params = {'docid':'e3_test','sheet_title':'任务','field_titles':['事项'],'limit':1}
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for payload in (table, json.dumps(table)):
+                with patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps({'errcode':0,'values':[payload]})}):
+                    self.assertEqual(self.bridge().read('smartsheet-query', params)['data']['values'], [table])
+            for bad in (None, ['bad json'], [{'rows':'not an array','columns':[]}], [table, table]):
+                with patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps({'errcode':0,'values':bad})}), self.assertRaisesRegex(dayuan.Error, 'WECOM_CLI_INVALID_RESPONSE'):
+                    self.bridge().read('smartsheet-query', params)
+
+    def test_new_operations_are_available_through_cli_and_mcp(self):
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for op, params, command, expected in self.domain_cases():
+                fixture = {'errcode':0,'values':[{'columns':[],'rows':[]}]} if op == 'smartsheet-query' else {'errcode':0,'sample':['read']}
+                with self.subTest(operation=op), patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps(fixture)}):
+                    with patch('sys.stdout', new_callable=io.StringIO) as output:
+                        dayuan.main(['--state-dir',str(self.root),'wecom',op,'--json',json.dumps(params)])
+                    self.assertEqual(json.loads(output.getvalue())['data'], fixture)
+                    msg={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'dayuan_wecom_read','arguments':{'operation':op,'parameters':params}}}
+                    with patch('sys.stdin', io.StringIO(json.dumps(msg)+'\n')), patch('sys.stdout', new_callable=io.StringIO) as output:
+                        dayuan.serve(self.root)
+                    reply=json.loads(output.getvalue())
+                    self.assertEqual(json.loads(reply['result']['content'][0]['text'])['data'], fixture)
+
+    def test_mcp_advertises_operation_specific_read_parameters(self):
+        msg={'jsonrpc':'2.0','id':1,'method':'tools/list'}
+        with patch('sys.stdin',io.StringIO(json.dumps(msg)+'\n')), patch('sys.stdout',new_callable=io.StringIO) as output:
+            dayuan.serve(self.root)
+        tool = next(t for t in json.loads(output.getvalue())['result']['tools'] if t['name']=='dayuan_wecom_read')
+        self.assertTrue(tool['annotations']['readOnlyHint'])
+        branches={b['properties']['operation']['const']:b['properties']['parameters'] for b in tool['inputSchema']['oneOf']}
+        self.assertEqual(branches['mail-get']['required'], ['mail_ids'])
+        self.assertNotIn('sql', branches['smartsheet-query']['properties'])
+        self.assertEqual(branches['sheet-read']['required'], ['docid','range'])
+        self.assertEqual(branches['disk-list']['properties']['limit']['maximum'],50)
+        self.assertNotIn('disk-download', branches)
+        self.assertFalse(self.log.exists())
+
+    def test_mail_partial_errors_and_sheet_visibility_are_preserved(self):
+        cases = [('mail-get', {'mail_ids':['m1','m2']}, {'mail_list':[{'errcode':0,'content':'ok'},{'errcode':403,'errmsg':'denied'}]}),
+                 ('sheet-read', {'docid':'e3_test','range':'A1:B1'}, {'cells':[['ok',{}]],'not_viewable_cells':['B1'],'truncated':True})]
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for op, params, fixture in cases:
+                with patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps(fixture)}):
+                    self.assertEqual(self.bridge().read(op,params)['data'],fixture)
+
+    def test_table_discovery_and_exact_range_limits(self):
+        from wecom_bridge import parameters
+        self.assertEqual(parameters('doc-search', {'keywords':['项目'],'doc_types':['sheet','smartsheet']}), {'keywords':['项目'],'doc_types':['sheet','smartsheet'],'limit':10})
+        self.assertEqual(parameters('sheet-read', {'docid':'d','range':'A1:J100'}), {'docid':'d','range':'A1:J100'})
+        self.assertEqual(parameters('sheet-read', {'docid':'d','range':'XFD1048576'}), {'docid':'d','range':'XFD1048576'})
+        for region in ('A1:J101','XFE1','A1048577','a1:b2',' A1'):
+            with self.subTest(region=region), self.assertRaisesRegex(dayuan.Error,'INVALID_WECOM_PARAMETERS'):
+                parameters('sheet-read', {'docid':'d','range':region})
+        with self.assertRaisesRegex(dayuan.Error,'INVALID_WECOM_PARAMETERS'):
+            parameters('doc-search', {'keywords':['x'],'doc_types':['smartpage']})
+        self.assertEqual(parameters('disk-list', {'limit':50,'cursor':'next'}), {'limit':50,'cursor':'next'})
+
+    def test_script_entrypoints_return_json_errors_and_keep_mcp_alive(self):
+        import subprocess
+        import sys
+        entry = [sys.executable, str(Path(dayuan.__file__)), '--state-dir', str(self.root)]
+        result = subprocess.run(entry + ['wecom', 'mail-get', '--json', '{"mail_ids":[]}'], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(json.loads(result.stdout), {'error':'INVALID_WECOM_PARAMETERS'})
+        messages = [
+            {'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'dayuan_wecom_read','arguments':{'operation':'mail-get','parameters':{'mail_ids':[]}}}},
+            {'jsonrpc':'2.0','id':2,'method':'ping'},
+        ]
+        result = subprocess.run(entry + ['serve'], input='\n'.join(json.dumps(msg) for msg in messages)+'\n', capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, '')
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(replies), 2)
+        self.assertTrue(replies[0]['result']['isError'])
+        self.assertEqual(replies[0]['result']['content'][0]['text'], 'INVALID_WECOM_PARAMETERS')
+        self.assertEqual(replies[1], {'jsonrpc':'2.0','id':2,'result':{}})
+        self.assertFalse(self.log.exists())
+        self.assertFalse(Path(str(self.log)+'.version').exists())
+
+
+    def test_smart_table_field_names_are_data_not_local_file_references(self):
+        table = {'columns':['file_path'], 'rows':[{'file_path':'reports/example.csv'}]}
+        cases = [
+            ('smartsheet-query', {'docid':'d','sheet_title':'任务','field_titles':['file_path']}, {'values':[table]}),
+            ('smartsheet-query', {'docid':'d','sheet_title':'任务','field_titles':['file_path']}, {'values':[json.dumps(table)]}),
+            ('smartsheet-records', {'docid':'d','sheet_id':'s'}, {'records':[{'values':{'file_path':'reports/example.csv'}}]}),
+        ]
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for op, params, payload in cases:
+                with self.subTest(operation=op, payload=payload), patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps(payload)}):
+                    result = self.bridge().read(op,params)['data']
+                    self.assertEqual(result, {'values':[table]} if op == 'smartsheet-query' else payload)
+
+    def test_smart_query_accepts_rows_without_optional_columns(self):
+        params = {'docid':'d','sheet_title':'任务','field_titles':['事项']}
+        table = {'rows':[{'事项':'样本'}]}
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for encoded in (table, json.dumps(table)):
+                with patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps({'values':[encoded]})}):
+                    self.assertEqual(self.bridge().read('smartsheet-query',params)['data'], {'values':[table]})
+
+    def test_smart_json_spool_is_bounded_parsed_and_checked_for_errors(self):
+        params = {'docid':'d','sheet_title':'任务','field_titles':['file_path']}
+        payload = {'errcode':0, 'values':[{'rows':[{'file_path':'reports/example.csv'}]}]}
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            with patch.dict(os.environ, {'FAKE_MODE':'json-spool','FAKE_SPOOL':json.dumps(payload)}):
+                self.assertEqual(self.bridge().read('smartsheet-query',params)['data'],payload)
+            for contents, error in [('not JSON','WECOM_CLI_INVALID_RESPONSE'), ('[]','WECOM_CLI_INVALID_RESPONSE'), ('oversize','WECOM_CLI_RESPONSE_TOO_LARGE'), ('{"errcode":403,"errmsg":"private error"}','WECOM_CLI_ERROR_403')]:
+                with self.subTest(error=error), patch.dict(os.environ, {'FAKE_MODE':'json-spool','FAKE_SPOOL':contents}), self.assertRaisesRegex(dayuan.Error,error):
+                    self.bridge().read('smartsheet-query',params)
+            with patch.dict(os.environ, {'FAKE_MODE':'outside-file'}), self.assertRaisesRegex(dayuan.Error,'WECOM_CLI_INVALID_FILE'):
+                self.bridge().read('smartsheet-query',params)
+
+    def test_smart_results_retain_response_depth_limit_after_decoding(self):
+        nested = 'value'
+        for _ in range(70):
+            nested = [nested]
+        table = {'rows':[{'details':nested}]}
+        params = {'docid':'d','sheet_title':'任务','field_titles':['details']}
+        with patch('workbuddy_auth.CloudAuth.ensure_wecom', return_value={'access_token':'fresh-test-token'}):
+            for encoded in (table, json.dumps(table)):
+                with patch.dict(os.environ, {'FAKE_RESPONSE':json.dumps({'values':[encoded]})}), self.assertRaisesRegex(dayuan.Error,'WECOM_CLI_INVALID_RESPONSE'):
+                    self.bridge().read('smartsheet-query',params)

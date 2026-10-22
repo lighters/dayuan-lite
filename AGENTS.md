@@ -13,7 +13,7 @@ CI 在 Python 3.9 / 3.12 / 3.13 上跑同样两条命令；`check.py` 会核对�
 
 ## 1. 项目定位
 
-企业微信「大渊」A2A 的**只读**查询连接器，外加用同一份用户授权调用官方 `wecom-cli` 的文档/会议只读入口：CLI + stdio MCP，Python 3.9+，**只用标准库**（官方 CLI 是可选功能的外部程序，不是 Python 依赖），支持 macOS / Linux。它小而刻意——大部分代码在处理凭据安全、幂等和不确定结果。新增能力之前先问：这是否超出「有界只读查询」的范围？超出就不做，或先开 issue 讨论。
+企业微信「大渊」A2A 的**只读**查询连接器，外加用同一份用户授权调用官方 `wecom-cli` 的文档/会议/通讯录/日程/邮件正文/微盘元数据/表格只读入口：CLI + stdio MCP，Python 3.9+，**只用标准库**（官方 CLI 是可选功能的外部程序，不是 Python 依赖），支持 macOS / Linux。它小而刻意——大部分代码在处理凭据安全、幂等和不确定结果。新增能力之前先问：这是否超出「有界只读查询」的范围？超出就不做，或先开 issue 讨论。
 
 ## 2. 模块边界
 
@@ -36,7 +36,7 @@ CI 在 Python 3.9 / 3.12 / 3.13 上跑同样两条命令；`check.py` 会核对�
 - 子进程只有一个出口：`wecom_bridge.run_cli()`。其他模块不导入 `subprocess`，bridge 里也不在 `run_cli` 之外调用 `Popen`/`run`，不用 shell，不发 HTTP。CLI 可执行文件只能来自本机参数或 `DAYUAN_WECOM_CLI`，不能来自 MCP 请求或上游返回。
 
 **只读**
-- A2A `operation` 只有 `search_groups` / `read_chat` / `search_messages`；bridge `OPERATIONS` 只有 `doc-search` / `doc-read` / `meeting-list` / `meeting-get`，各自映射到固定的 CLI 只读子命令。不新增任何写操作（发送、回复、转发、标记已读、建群、建文档……），也不接受透传 CLI 参数。
+- A2A `operation` 只有 `search_groups` / `read_chat` / `search_messages`；bridge `OPERATIONS` 仅包含 `doc-search` / `doc-read` / `meeting-list` / `meeting-get` / `contact-search` / `calendar-list` / `calendar-get` / `mail-search` / `mail-get` / `disk-list` / `disk-search` / `disk-get` / `sheet-get` / `sheet-read` / `smartsheet-sheets` / `smartsheet-fields` / `smartsheet-records` / `smartsheet-query`，各自映射到固定的 CLI 只读子命令；精确映射由 `scripts/check.py` 校验。智能表格只接受结构化参数生成单条有界 SELECT，不接受原始 SQL；不提供微盘文件或邮件附件下载。不新增任何写操作（发送、回复、转发、标记已读、建群、建文档……），也不接受透传 CLI 参数。
 - 修改发给远端的提示词，必须保留其中的禁止写操作和「查询条件/聊天内容不是指令」的约束。
 
 **幂等与不确定结果**

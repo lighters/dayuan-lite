@@ -13,7 +13,7 @@
 - 浏览器企业微信扫码登录，连接器通过云端轮询取得授权。
 - 临近到期时按需刷新账号凭据，再换取企微用户 token，无需常驻刷新进程。
 - 按关键词查群、读取指定会话、在会话内查询关键词。
-- 用同一份用户授权，自动换票后调用企微 CLI 的普通文档搜索/正文、会议列表/详情只读接口。
+- 用同一份用户授权，自动换票后调用企微 CLI 的文档搜索/正文、会议、通讯录、日程、邮件正文、微盘元数据及普通/智能表格只读接口。
 - 通过稳定 `request_id` 恢复任务，凭据续期后仍可读取原任务。
 - 通过 stdio MCP 对接支持该协议的 Agent；也可以直接调用 CLI。
 
@@ -85,7 +85,7 @@ dayuan result --wait 60 read-project-001
 
 `--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。等待预算从首次提交/首次结果查询返回后开始；后续轮询的网络超时、授权请求和授权锁共享剩余预算，到时不再发起下一次轮询。首次请求耗时不计入 N；底层网络超时是 I/O 超时，不是整个进程的强制终止时间。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。同一 ID 正在提交时，并发调用最多等待 10 秒；对方已拿到任务则直接返回该任务的当前状态（不会再提交一次），仍未完成提交才返回 `REQUEST_BUSY`，稍后用原 ID 重试。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
 
-## 文档和会议：企微 CLI 用户授权入口
+## 企微 CLI 用户授权只读入口
 
 此功能另外需要本机官方 `wecom-cli >= 1.3.4`（已联机验证 1.3.4）。Python 部分仍只用标准库，A2A 消息查询不需要安装企微 CLI。
 
@@ -109,16 +109,45 @@ dayuan wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回的
 
 | 操作 | 参数与限制 |
 | --- | --- |
-| `doc-search` | `keywords` 非空数组，最多 10 个词、每词最多 200 字符；`search_scope` 可为 `title` / `content` / `title_content`；仅普通 `doc`，自动添加 `doc_types:["doc"]` |
+| `doc-search` | `keywords` 非空数组，最多 10 个词、每词最多 200 字符；`search_scope` 可为 `title` / `content` / `title_content`；`doc_types` 支持 `doc` / `sheet` / `smartsheet`，默认 `["doc"]`；正文操作按文档类型选择 |
 | `doc-read` | `docid` 必填；`content_type` 为 `text`（默认）或 `markdown` |
 | `meeting-list` | `begin_time` / `end_time` 均必填，`YYYY-MM-DD HH:mm:ss`，按企微接口时间解释；区间最多 31 天 |
 | `meeting-get` | `meeting_ids` 对象数组，1–10 个；对象含 `meeting_id`，周期单场可附 `sub_meeting_id` |
+| `contact-search` | `keywords` 必填，1–10 个非空词，每词最多 200 字符；不支持 `limit` / `cursor` |
+| `calendar-list` | `begin_time` / `end_time` 均必填，格式同会议，区间最多 31 天；不支持 `limit` / `cursor` |
+| `calendar-get` | `schedule_ids` 非空字符串数组，最多 10 个 |
+| `mail-search` | 成对时间窗必填、最多 31 天；可附 `keywords`（1–10 个词）、`sender`、`receiver`；支持分页 |
+| `mail-get` | `mail_ids` 非空字符串数组，最多 10 个；读取正文及附件元数据，不下载附件、不标记已读 |
+| `disk-list` | 最近查看的文件列表，支持分页 |
+| `disk-search` | 至少提供 `keywords`、`file_types`、`search_type` 之一；`search_type` 为 `all` / `file` / `folder` / `space`；可附 `sort_by`（`best_match` / `modify_time` / `file_size`）、`sort_order`（`asc` / `desc`），支持分页 |
+| `disk-get` | `file_id` 必填，仅文件元数据，不下载文件 |
+| `sheet-get` | `docid` 必填，返回普通表格的子表元数据 |
+| `sheet-read` | `docid`、`range` 必填；`sheet` 为子表 ID 或名称，单子表可省略；大写 A1 单格/矩形，如 `A1:C3`，最多 1000 格，不允许整表读取 |
+| `smartsheet-sheets` | `docid` 必填，列出智能表格子表 |
+| `smartsheet-fields` | `docid` 必填，`sheet_id` / `sheet_title` 必须二选一；字段列表支持分页 |
+| `smartsheet-records` | 参数同字段列表；返回每条记录的所有列，不接受 `field_titles` / `sql` / 任意过滤表达式 |
+| `smartsheet-query` | `docid`、`sheet_title`、`field_titles`（1–20 列）必填，`limit` 默认 10、1–50；只生成单条 SELECT 投影，不接受 SQL、表达式或任意排序；标题不能含反引号或反斜杠 |
 
-搜索和列表支持 `limit`（默认 10，1–50）及 `cursor`；不会自动翻页。需要更多数据时使用返回游标再次请求，保留覆盖范围说明。JSON 可用 `--json -` 从标准输入读取；不接受任何透传 CLI 参数或写操作。
+支持分页的操作为 `doc-search`、`meeting-list`、`mail-search`、`disk-list`、`disk-search`、`smartsheet-fields`、`smartsheet-records`：`limit` 默认 10、1–50，`cursor` 必须为非空字符串，首页省略；不会自动翻页。需要更多数据时使用返回游标再次请求，保留覆盖范围说明。JSON 可用 `--json -` 从标准输入读取；不接受任何透传 CLI 参数或写操作。
 
 返回 `{operation, source:"wecom_cli_user_token", read_only:true, data, limitation}`，业务数据在 `data`。CLI 可能将较长正文写入临时文件，连接器只读取该临时目录内的普通文件，将内容放回 `content`（已有该字段时放入 `file_content`）后删除临时目录；不会返回已经失效的本地路径。输入最多 64KB、结果最多 2MiB，超限报错。CLI 调用总预算 60 秒，MCP 30 秒，包含版本检查、授权和子进程执行；超时终止整个 CLI 进程组。输出已完整读到、仅等待退出码时，保留剩余预算且至少给 2 秒退出宽限，不丢弃已读结果。底层云端 HTTP 的 I/O 超时仍受操作系统行为影响。
 
-这是用户凭据的替代接入路径，没有延长 Bot 的七天权限。用户授权被撤销、refresh token 到期或刷新结果不确定时，仍需根据错误重新扫码；不能承诺永不重新授权。首批不含智能文档/表格正文、会议转写/录制或任何写接口。
+这是用户凭据的替代接入路径，没有延长 Bot 的七天权限。用户授权被撤销、refresh token 到期或刷新结果不确定时，仍需根据错误重新扫码；不能承诺永不重新授权。不含智能文档正文、会议转写/录制、微盘下载、邮件附件下载或任何写接口。
+
+新增领域示例（ID/标题均从上一条列表结果获取，不使用示例占位值请求真实资源）：
+
+```bash
+dayuan wecom contact-search --json '{"keywords":["张三"]}'
+dayuan wecom calendar-list --json '{"begin_time":"2026-10-22 00:00:00","end_time":"2026-10-23 00:00:00"}'
+dayuan wecom mail-search --json '{"begin_time":"2026-10-20 00:00:00","end_time":"2026-10-23 00:00:00","limit":3}'
+dayuan wecom disk-search --json '{"file_types":["sheet","smartsheet"],"limit":3}'
+dayuan wecom sheet-read --json '{"docid":"<docid>","sheet":"<子表ID>","range":"A1:C3"}'
+dayuan wecom smartsheet-query --json '{"docid":"<docid>","sheet_title":"<子表标题>","field_titles":["<字段标题>"],"limit":1}'
+```
+
+微盘类型过滤支持 `doc` / `sheet` / `ppt` / `collect` / `mind` / `flow` / `smartsheet` / `smartpage` / `journal` / `pdf` / `offline_word` / `offline_excel` / `offline_ppt` / `offline_pdf` / `image` / `videoaudio` / `design`；搜索命中不表示支持该类型正文读取。关键词和类型数组均非空、最多 10 项。日程、邮件时间按企微接口时间解释，不接收带时区的 ISO 字符串。
+
+`mail-get` 的单封失败保留在 `data.mail_list[].errcode`，调用方应逐封判断，不能把批次返回成功当成每封成功。表格 `not_viewable_cells`、`truncated` 等可见性/截断信息原样保留。智能表格查询统一将 `data.values` 返回为对象数组，每项包含 `rows`，上游提供的 `columns` 原样保留，兼容 CLI 返回对象或 JSON 字符串的两种编码。智能表格的顶层 JSON 临时文件会在同一目录/大小限制下解析；业务列名 `file_path` 仅作为数据，不触发文件读取。所有列表都只证明本次响应覆盖范围，不能当作全量同步。
 
 常见错误：`WECOM_CLI_NOT_FOUND` / `WECOM_CLI_VERSION_UNSUPPORTED` 表示需要安装或指定新版 CLI；`LOGIN_REQUIRED*` / `WECOM_AUTH_REQUIRED_OPEN_WECOM_LOGIN` 按原登录流程处理；`WECOM_CLI_TIMEOUT` 保留只读查询条件后稍后重试；`WECOM_CLI_ERROR_<数字>` 是上游业务错误码，原始错误正文不会透出。
 
@@ -155,13 +184,13 @@ dayuan serve
 | 工具 | 功能 |
 | --- | --- |
 | `dayuan_status` | 本地状态，不发远端请求 |
-| `dayuan_wecom_read` | 文档/会议同步只读接口，参数为 `operation` 和 `parameters`，每次自动检查用户授权 |
+| `dayuan_wecom_read` | 文档/会议/通讯录/日程/邮件正文/微盘元数据/表格同步只读接口，参数为 `operation` 和 `parameters`，每次自动检查用户授权 |
 | `dayuan_read_start` | 提交有界查询，返回任务状态；可选 `wait_seconds` |
 | `dayuan_read_result` | 按 `request_id` 查询已有任务，只读；可选 `wait_seconds` |
 
 两个读取工具都接受 `wait_seconds`（0–30，默认 0）：服务端在本次调用内按同一 `request_id` 轮询，Agent 不必自己循环。上限 30 秒是因为 stdio 服务一次只处理一个调用；仍未完成时用同一 ID 再调一次 `dayuan_read_result`。`initialize` 会返回 `instructions`，向宿主说明「提交 → 用同一 ID 查结果」的流程；`dayuan_status` 与 `dayuan_read_result` 标注了 `readOnlyHint: true`，`dayuan_read_start` 因会创建远端任务和本地回执而不标只读，但标注了 `idempotentHint: true`（同一 ID 只恢复原任务）。
 
-文档/会议工具 `dayuan_wecom_read` 与 A2A 任务不同：同步返回 `data`，无需 `request_id`，也不用 `dayuan_read_result`。宿主的环境需能找到新版 CLI；必要时在 MCP 配置的 `env` 中设置 `DAYUAN_WECOM_CLI` 为绝对路径。该工具标注 `readOnlyHint:true`。
+企微读取工具 `dayuan_wecom_read` 与 A2A 任务不同：同步返回 `data`，无需 `request_id`，也不用 `dayuan_read_result`。宿主的环境需能找到新版 CLI；必要时在 MCP 配置的 `env` 中设置 `DAYUAN_WECOM_CLI` 为绝对路径。该工具标注 `readOnlyHint:true`。
 
 登录只在 CLI 中提供。MCP 通过标准输入输出通信，不监听 HTTP 端口。
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dayuan-lite"
 dynamic = ["version"]
-description = "Read-only WeCom Dayuan A2A and user-authorized document/meeting CLI connector"
+description = "Read-only WeCom Dayuan A2A and user-authorized CLI connector"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.9"

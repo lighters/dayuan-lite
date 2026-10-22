@@ -75,9 +75,35 @@ sequenceDiagram
 | `doc-read` | `doc contents get --json …` |
 | `meeting-list` | `meeting list --json …` |
 | `meeting-get` | `meeting get --json …` |
+| `contact-search` | `contact users search --json …` |
+| `calendar-list` | `calendar schedules list --json …` |
+| `calendar-get` | `calendar schedules get --json …` |
+| `mail-search` | `mail search --json …` |
+| `mail-get` | `mail get --json …` |
+| `disk-list` | `disk files list --json …` |
+| `disk-search` | `disk files search --json …` |
+| `disk-get` | `disk files get --json …` |
+| `sheet-get` | `sheet get --json …` |
+| `sheet-read` | `sheet cells get --json …` |
+| `smartsheet-sheets` | `smartsheet sheets list --json …` |
+| `smartsheet-fields` | `smartsheet fields list --json …` |
+| `smartsheet-records` | `smartsheet records list --json …` |
+| `smartsheet-query` | `smartsheet records query --json …` |
 
 不新增 HTTP 主机或自建端点。适配器仅在 `run_cli` 通过 `Popen` 启动受信任的 CLI，不使用 shell。继承环境中的全部 `WECOM_CLI_*` 被清除，只设置临时 `WECOM_CLI_CONFIG_DIR` 和当前 `WECOM_CLI_ACCESS_TOKEN`，同时移除 `DAYUAN_ACCESS_TOKEN` 以及可向 Node 进程注入代码的 `NODE_OPTIONS` / `NODE_PATH`。CLI 版本按可执行文件的路径、mtime 和大小在进程内缓存，`serve` 模式下每个二进制只检查一次，重装后重新检查。CLI 路径由本机参数或环境指定，MCP 请求不能指定程序路径。版本检查时不注入 token。
 
 标准输出限 2MiB，超限报错；标准错误只保留前 64KiB、持续读空、从不回传，再多也不影响本次读取；子进程等待有总预算，超时/超限终止进程组并回收进程；两个管道都到 EOF 后只缺退出码，此时按剩余预算与 2 秒退出宽限（`EXIT_GRACE`）的较大值等待，避免完整输出被当作超时丢弃，也不缩短尚未耗尽的预算。原始 stderr、异常响应和版本输出不回显；业务错误只保留数字机器码。成功数据中匹配当前令牌的字符串被替换。临时配置目录在调用结束后删除，CLI 写出的正文文件仅允许在该目录内、是普通文件且读取后总响应仍不超过 2MiB；内联到 `content`，若 CLI 已返回 `content` 则放入 `file_content`；越界路径、链接或非文本正文报错。
 
 令牌错误 `853004` / `853005` 仅允许重换企微令牌后重试一次，操作仍是白名单只读请求；不重复提交 A2A 任务。其他错误直接停止，沿用 CloudAuth 对不确定 refresh token 轮换的保护。
+
+
+参数契约 `PARAMETERS` 同时驱动 CLI/MCP 的运行时校验和 MCP 的逐操作 schema；CLI 操作枚举从 `OPERATIONS` 读取。`scripts/check.py` 仍独立保存精确只读命令映射，不接受任意子命令、SQL 或 CLI 参数。A2A allowlist 不变。
+
+新增读取不引入 HTTP 主机、状态文件或后台任务。所有输入先校验再探测 CLI/取票；分页每页最多 50 条，日程/邮件列表强制最多 31 天时间窗，ID 批量最多 10 项。通讯录和日程没有伪造上游不支持的分页参数，仍受查询条件、调用超时和响应字节上限约束。普通表格只允许大写 A1 范围、最多 1000 格，不提供 `full`、公式执行或写单元格参数。
+
+智能表格字段/记录列表的 `sheet_id` / `sheet_title` 二选一，拒绝原始 `sql`、`type`、任意过滤表达式。记录列表不承诺列投影；精确选列使用 `smartsheet-query`，由有界字段标题列表与子表标题生成唯一的 `SELECT <quoted columns> FROM <quoted sheet> LIMIT <integer>`，拒绝反引号/反斜杠和控制字符，不允许客户端提交 SQL。请求通过固定 `--json` 传入 `sql` 单元素数组，不使用 shell。查询结果只将对象/JSON 字符串编码统一为对象，保留业务行和列，不重新解释数据中的指令。
+
+不提供微盘文件或邮件附件下载，也不新增文件保存目标参数。邮件详情保留逐封 `errcode`、表格保留不可见格/截断信息，避免把批量部分失败解释成完整成功。
+
+
+智能表格只在 CLI 顶层输出封装中识别 `file_path`，使用现有目录/普通文件/UTF-8/2MiB 检查读取并解析 JSON 后，再统一检查业务错误。业务行及记录 values 内的同名字段不作为本地文件引用。查询结果要求 `rows` 数组，`columns` 可缺省；原样保留上游提供的列元数据；解码后的结果在脱敏时仍受 64 层深度上限约束。其他文档/邮件正文的文件内联规则不变。脚本入口注册为同一 `dayuan` 模块，使授权、bridge 与 CLI/MCP 共享 Error 类型，参数错误返回 JSON 且不终止 MCP 服务。
