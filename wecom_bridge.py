@@ -176,9 +176,23 @@ def query_result(data):
             table = json.loads(table)
         except (ValueError, RecursionError):
             raise Error("WECOM_CLI_INVALID_RESPONSE") from None
-    if not isinstance(table, dict) or not isinstance(table.get("columns"), list) or not isinstance(table.get("rows"), list):
+    if not isinstance(table, dict) or not isinstance(table.get("rows"), list) or ("columns" in table and not isinstance(table["columns"], list)):
         raise Error("WECOM_CLI_INVALID_RESPONSE")
     return dict(data, values=[table])
+
+
+def smart_result(data, root):
+    # Only the CLI envelope is a file reference. Table field names are arbitrary data.
+    if "file_path" not in data:
+        return data
+    content = inline_files({"file_path": data["file_path"]}, root)["content"]
+    try:
+        payload = json.loads(content)
+    except (ValueError, RecursionError):
+        raise Error("WECOM_CLI_INVALID_RESPONSE") from None
+    if not isinstance(payload, dict) or "file_path" in payload:
+        raise Error("WECOM_CLI_INVALID_RESPONSE")
+    return {**{key: value for key, value in data.items() if key != "file_path"}, **payload}
 
 
 EXIT_GRACE = 2
@@ -232,13 +246,15 @@ def run_cli(argv, env, cwd, end):
         process.stderr.close()
 
 
-def redact(value, token):
+def redact(value, token, depth=0):
+    if depth > 64:
+        raise Error("WECOM_CLI_INVALID_RESPONSE")
     if isinstance(value, str):
         return value.replace(token, "[REDACTED]")
     if isinstance(value, list):
-        return [redact(item, token) for item in value]
+        return [redact(item, token, depth + 1) for item in value]
     if isinstance(value, dict):
-        return {key.replace(token, "[REDACTED]"): redact(item, token) for key, item in value.items()}
+        return {key.replace(token, "[REDACTED]"): redact(item, token, depth + 1) for key, item in value.items()}
     return value
 
 
@@ -305,6 +321,8 @@ class Bridge:
                     raise Error("WECOM_CLI_FAILED" if code else "WECOM_CLI_INVALID_RESPONSE") from None
                 if not isinstance(data, dict):
                     raise Error("WECOM_CLI_INVALID_RESPONSE")
+                if operation.startswith("smartsheet-"):
+                    data = smart_result(data, Path(temp))
                 error = data.get("errcode") or (data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else None)
                 if error in (853004, 853005) and not attempt:
                     continue
@@ -313,7 +331,8 @@ class Bridge:
                 if code or data.get("error"):
                     raise Error("WECOM_CLI_FAILED")
                 # Do not return paths into the temporary directory that is about to disappear.
-                data = inline_files(data, Path(temp))
+                if not operation.startswith("smartsheet-"):
+                    data = inline_files(data, Path(temp))
                 if operation == "smartsheet-query":
                     data = query_result(data)
                 result = {"operation": operation, "source": "wecom_cli_user_token", "read_only": True,

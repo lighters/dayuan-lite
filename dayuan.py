@@ -642,4 +642,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Bridge/auth imports must share this module's Error class when invoked as a script.
+    sys.modules["dayuan"] = sys.modules[__name__]
     main()

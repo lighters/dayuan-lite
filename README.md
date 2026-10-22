@@ -147,7 +147,7 @@ dayuan wecom smartsheet-query --json '{"docid":"<docid>","sheet_title":"<子表�
 
 微盘类型过滤支持 `doc` / `sheet` / `ppt` / `collect` / `mind` / `flow` / `smartsheet` / `smartpage` / `journal` / `pdf` / `offline_word` / `offline_excel` / `offline_ppt` / `offline_pdf` / `image` / `videoaudio` / `design`；搜索命中不表示支持该类型正文读取。关键词和类型数组均非空、最多 10 项。日程、邮件时间按企微接口时间解释，不接收带时区的 ISO 字符串。
 
-`mail-get` 的单封失败保留在 `data.mail_list[].errcode`，调用方应逐封判断，不能把批次返回成功当成每封成功。表格 `not_viewable_cells`、`truncated` 等可见性/截断信息原样保留。智能表格查询统一将 `data.values` 返回为对象数组，每项含 `columns` / `rows`，兼容 CLI 返回对象或 JSON 字符串的两种编码。所有列表都只证明本次响应覆盖范围，不能当作全量同步。
+`mail-get` 的单封失败保留在 `data.mail_list[].errcode`，调用方应逐封判断，不能把批次返回成功当成每封成功。表格 `not_viewable_cells`、`truncated` 等可见性/截断信息原样保留。智能表格查询统一将 `data.values` 返回为对象数组，每项包含 `rows`，上游提供的 `columns` 原样保留，兼容 CLI 返回对象或 JSON 字符串的两种编码。智能表格的顶层 JSON 临时文件会在同一目录/大小限制下解析；业务列名 `file_path` 仅作为数据，不触发文件读取。所有列表都只证明本次响应覆盖范围，不能当作全量同步。
 
 常见错误：`WECOM_CLI_NOT_FOUND` / `WECOM_CLI_VERSION_UNSUPPORTED` 表示需要安装或指定新版 CLI；`LOGIN_REQUIRED*` / `WECOM_AUTH_REQUIRED_OPEN_WECOM_LOGIN` 按原登录流程处理；`WECOM_CLI_TIMEOUT` 保留只读查询条件后稍后重试；`WECOM_CLI_ERROR_<数字>` 是上游业务错误码，原始错误正文不会透出。
 
