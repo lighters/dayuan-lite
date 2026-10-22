@@ -1,6 +1,6 @@
 # 验证范围
 
-记录日期：2026-10-15。A2A 原始联机验收版本：0.2.0；后续新增验证按下文注明版本。
+首次记录日期：2026-10-15；最近联机补验：2026-10-21。A2A 原始联机验收版本：0.2.0；后续新增验证按下文注明版本。
 
 ## 离线验证
 
@@ -38,7 +38,8 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 
 - 原始消息数量、逐字内容和完整性；结果是远端 Agent 生成的摘要。
 - 已用 `uv build` 构建 wheel，并在 Python 3.9.6 与 3.12 下通过 `uvx --from <wheel> dayuan` 运行 `--help`、`status` 和 MCP `initialize`；没有从 GitHub 地址实际执行 `pipx install` / `uvx --from git+...`，也没有用安装后的命令做真实登录和查询。
-- 0.3.0 新增的 `--wait` / `wait_seconds` 服务端等待只有离线测试，尚未对真实大渊任务联机验证。
+- CLI `read --wait` 已在真实任务上验证（见 2026-10-21 记录）；MCP `wait_seconds` 本轮未单独联机验证。
+- #12 在真实 CLI 输出 EOF 后延迟退出时的宽限边界；本轮真实 CLI 仅完成兼容性冒烟验证。
 - 跨天自然到期、企业撤销授权后重新授权的长期运行情况。
 - 所有企业、账号类型和 WorkBuddy 版本的通用可用性。
 - 上游强制执行只读权限；本地只提供查询模板和只读提示。
@@ -59,7 +60,7 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 
 ## 终态结果缓存（2026-10-20）
 
-只有离线测试：任务从 `working` 变为 `completed` / `failed` 后，再次 `result()` 与 `read_result()` 不再调用 `Client.request` 或底层 HTTP，返回与首次相同的归一化结果；回执文件里含整理后的 `text`，不含 token、查询原文、上游 `history` / `artifacts` 等原始字段；`working` 任务每次仍联网且回执无 `result`；换用另一凭据读取同一 ID 仍被拒绝且不联网。没有对真实大渊任务联机验证缓存命中。
+2026-10-20 的离线测试覆盖：任务从 `working` 变为 `completed` / `failed` 后，再次 `result()` 与 `read_result()` 不再调用 `Client.request` 或底层 HTTP，返回与首次相同的归一化结果；回执文件里含整理后的 `text`，不含 token、查询原文、上游 `history` / `artifacts` 等原始字段；`working` 任务每次仍联网且回执无 `result`；换用另一凭据读取同一 ID 仍被拒绝且不联网。2026-10-21 已补充真实任务缓存命中验证，见下文；该项不再仅有离线证据。
 
 ## 回执管理命令（2026-10-20）
 
@@ -69,4 +70,21 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 
 新增真实子进程回归：假 CLI 输出 JSON 后关闭 stdout/stderr，延迟 2.3 秒退出；调用预算 10 秒时应保留完整结果。该测试在 PR #12 原实现上报 `WECOM_CLI_TIMEOUT`，修复后成功；既有预算 0.5 秒、退出延迟 1 秒的用例继续验证退出宽限。未测量真实 npm 启动器的退出延迟，本次没有使用真实凭据或发起联机业务查询。
 
-本次还分别在 PR #13、#14 版本运行 `scripts/check.py` 与完整离线测试，覆盖版本缓存、CLI 存在性检查、stderr 持续读空、Node 环境变量隔离、已有正文保护，以及同 ID 请求等待锁和恢复任务。三个改动组合后再次通过相同检查。新增行为没有新增联机验收证据。
+本次还分别在 PR #13、#14 版本运行 `scripts/check.py` 与完整离线测试，覆盖版本缓存、CLI 存在性检查、stderr 持续读空、Node 环境变量隔离、已有正文保护，以及同 ID 请求等待锁和恢复任务。三个改动组合后再次通过相同检查。截至该次离线回归，新增行为没有联机验收证据；2026-10-21 的补验见下文。
+
+## 联机补验（2026-10-21）
+
+版本为 main `82fb90da10db0069ee8419f02eca79cc5d6c19cd`（#16），Dayuan Lite 0.4.0，Python 3.12.12，官方 wecom-cli 1.3.4（f9b2815）。使用现有独立账号目录和隔离源码副本，没有升级全局 CLI，也没有重新扫码。
+
+| 验证 | 结果与证据 |
+| --- | --- |
+| #10 刷新请求发送前 DNS 失败 | 将真实账号的本地 `auth.expiresAt` 暂设为 1，在受限进程网络中执行 `read --wait 5`，0.068 秒返回 `TRANSPORT_NOT_SENT`；账号仍为 `ready`。随后恢复原过期时间并联网 `renew`，真实刷新和企微换票成功，无需重新扫码。没有关闭整机网络。 |
+| #10 发送前预算耗尽 | 真实账号状态下，直接调用 CloudAuth，设置 0.5 秒 deadline，并通过 trace 在 HTTP timeout 计算前注入 0.6 秒真实延迟；返回 `WAIT_TIMEOUT`，无 HTTP 请求，账号仍为 `ready`。过期时间模拟已恢复。该定点实验不证明 CLI 的整体等待预算。 |
+| #14 同 ID 并发与 CLI `--wait` | 两个独立进程同时对同一新 request_id 执行 `read --wait 30`，15.370 / 16.936 秒后均返回同一 task_id 和 `completed`；只观察元数据的 audit hook 记录到两进程合计一次提交 POST，另一进程实际等待锁，无 `REQUEST_BUSY`。两路均轮询同一远端任务。 |
+| #16 终态结果缓存 | 任务完成后，`result --wait 60` 用时 0.074 秒，普通 `result` 用时 0.046 秒；禁止 DNS/连接的新进程仍在 0.046 秒返回完全相同的结果。三次 audit 记录均无 HTTP 或连接请求。测试时授权有效，不证明授权过期时免续期。 |
+| #12 真实 CLI 兼容性 | 正式 `wecom doc-search` 用时 4.747 秒，返回 `source=wecom_cli_user_token`、`errcode=0`、stderr 为空。本次搜索无文档条目；证明调用链成功，不证明非空正文读取。真实 CLI 未自然触发延迟退出场景，宽限边界仍只有离线证据。 |
+| #13 CLI 存在性和版本缓存 | `status` 返回 `wecom_cli.found=true`。同一进程中真实 Bridge 连续搜索两次，第一次启动版本探测和搜索，第二次仅启动搜索；两次成功，证明进程内版本缓存命中。 |
+
+验收末尾账号仍为 `ready`，保留真实续期后的新凭据。Python 3.12.12 下通过 `scripts/check.py` 和完整离线回归。A2A 返回未找到相关信息；这是远端生成结果，未独立核对原始消息完整性。本轮没有验证 MCP 等待参数、CLI 从启动开始的整体墙钟预算、真实 CLI 的延迟退出宽限边界、自然过期/撤权后的长期运行或 `input_required` 追问。
+
+公开记录省略真实账号、任务/上下文标识、私有路径和全部凭据。
