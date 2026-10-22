@@ -14,7 +14,26 @@ FORBIDDEN_IMPORTS = {"http", "socket", "ssl", "subprocess", "multiprocessing", "
 HTTP_CALLS = {"urlopen", "build_opener", "OpenerDirector"}
 READ_OPERATIONS = ["search_groups", "read_chat", "search_messages"]
 # Each bridge operation maps to exactly this read-only CLI subcommand; nothing else may be spawned.
-BRIDGE_OPERATIONS = {"doc-search": ("doc", "search"), "doc-read": ("doc", "contents", "get"), "meeting-list": ("meeting", "list"), "meeting-get": ("meeting", "get")}
+BRIDGE_OPERATIONS = {
+    "doc-search": ("doc", "search"),
+    "doc-read": ("doc", "contents", "get"),
+    "meeting-list": ("meeting", "list"),
+    "meeting-get": ("meeting", "get"),
+    "contact-search": ("contact", "users", "search"),
+    "calendar-list": ("calendar", "schedules", "list"),
+    "calendar-get": ("calendar", "schedules", "get"),
+    "mail-search": ("mail", "search"),
+    "mail-get": ("mail", "get"),
+    "disk-list": ("disk", "files", "list"),
+    "disk-search": ("disk", "files", "search"),
+    "disk-get": ("disk", "files", "get"),
+    "sheet-get": ("sheet", "get"),
+    "sheet-read": ("sheet", "cells", "get"),
+    "smartsheet-sheets": ("smartsheet", "sheets", "list"),
+    "smartsheet-fields": ("smartsheet", "fields", "list"),
+    "smartsheet-records": ("smartsheet", "records", "list"),
+    "smartsheet-query": ("smartsheet", "records", "query"),
+}
 TEST_FILE = re.compile(r"\btest_\w+\.py\b")
 TEST_COUNT = re.compile(r"\d+\s*(?:项|个)(?:离线)?(?:测试|用例)")
 # Wording rules from AGENTS.md; applies to every tracked text file except the rule sources themselves.
