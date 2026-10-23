@@ -41,6 +41,7 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 - CLI `read --wait` 已在真实任务上验证（见 2026-10-21 记录）；MCP `wait_seconds` 本轮未单独联机验证。
 - #12 未改动的官方 CLI 自然出现 EOF 后长尾延迟退出时的宽限边界；2026-10-23 已补真实 CLI 输出加受控启动器的边界实验，不能混同为官方 CLI 自然长尾。
 - 真实普通文本追问成功闭环；2026-10-23 已取得真实 input_required，但现场是结构化交互卡，正式文本 reply 返回 HTTP 400，未通过（见补验记录）。
+- 0.6.1 审批卡在新联机挂起任务中的端到端分流及人工处理后恢复；本轮两次有界只读取样均直接 completed，仅历史真实卡片回包的离线回放通过。不提供客户端卡片审批，真实文本追问成功仍未证明。
 - 跨天自然到期、企业撤销授权后重新授权的长期运行情况。
 - 所有企业、账号类型和 WorkBuddy 版本的通用可用性。
 - 上游强制执行只读权限；本地只提供查询模板和只读提示。
@@ -192,3 +193,33 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 这些结果补充了“真实 CLI 输出 + 受控启动器”的集成证据，并覆盖剩余预算、最小宽限与超界终止。#12 未改动官方 CLI 自然产生 EOF 后长尾延迟的边界仍未验证；不能把受控集成实验改写为该自然行为已通过。
 
 公开记录不包含真实群名/内容、账号与任务标识、交互卡 token、本机私有状态路径或任何凭据。原始取证仅在本机私有目录，未随 PR 提交。
+
+## 结构化交互卡分流与 HTTP 400 防护（0.6.1，2026-10-23）
+
+基线 main `94bb2a7f97db4c489d4fb1440648d8496421ec2c`（#20）。本轮按交互类型适配已有 CLI/MCP，不新增主机、A2A 方法或审批/取消接口，不修改授权或原有不确定结果屏障。#12 退出等待实现未改；官方 CLI 自然出现 EOF 后长尾延迟退出的边界仍未验证。
+
+### 排查与适配范围
+
+此前真实挂起响应的当前 `status.message.parts` 为结构化 data，含 `token_id_list` 且 metadata 标记 `wecom_part_type=approval`，不是普通文本问题。旧实现仅依据 input_required 放行 reply，并优先展示旧 artifacts/history，既可能隐藏当前问题，也会把审批卡送入文本回复路径。官方 [2.144.0 发布说明](https://www.codebuddy.ai/docs/cli/release-notes/v2.144.0) 区分审批卡的带外交互与普通消息提交。服务端 400 / INVALID_ARGUMENT 未说明具体无效字段，本轮修复的是已经证实的客户端交互误分类，不能声称已确定服务器内部校验原因或使原文本回复变为被接受。
+
+新 `interaction` 明确标记 clarification / approval / unsupported / authorization、reply_allowed 和 protocol。仅当前 status.message 的受支持非空纯文本允许回复，不从旧摘要补问题。审批标记优先于文本；未知、混合或畸形结构停止文本提交。审批卡仅返回固定人工核对指引，text 为空，不公开或持久化卡片载荷、令牌、metadata 或链接。不向 MCP 宿主转交审批令牌，不自动 elicitation、审批、拒绝或取消任务。卡片涉及写操作、权限不明或找不到官方入口时停止，不绕过。
+
+被拦截的 reply 返回原查询 request_id、未发送的 reply_request_id、reply_sent=false 及 APPROVAL_REQUIRED / UNSUPPORTED_INTERACTION；无 POST、无新回复回执，不覆盖既有拒绝回执或独立屏障。原查询可继续 GET；不因父任务状态变化消除某次回复的不确定性。README、Bot 指引及随包 Skill 已同步分流规则。
+
+### 离线回归与历史真实回包回放
+
+先在旧实现执行新增回归，复现“旧摘要盖过当前问题”“无 interaction 分类”“审批卡仍 POST”；修复后全套离线测试及 scripts/check.py、git diff --check 通过。用例覆盖审批标记、空/畸形 token 列表、混合文本、未知结构、缺失问题、auth_required、同任务文本澄清及幂等、CLI/MCP 分流、等待立即返回、不确定屏障与既有拒绝回执保持。原追问测试的模拟挂起任务补上明确当前问题，没有放宽原有断言。
+
+另将此前保存的真实审批卡原始响应原样在网络请求边界回放（这是离线回放，不是新联机回包），驱动正式 CLI reply、MCP result/reply 和 ping：三次调用均识别 approval，两个 reply 均 reply_sent=false，全部仅 GET，没有 POST；无回复回执、无新屏障，卡片 data/metadata/令牌未出现在输出或回执，MCP ping 正常。
+
+### 本轮联机结果与未证明事项
+
+同一真实账号的旧挂起任务首次 GET 已是 completed，耗时 2.205 秒；当次仅发生正常云端换票及任务 GET，未发送 A2A 回复、未审批，不能据终态推断审批由谁处理或原回复已被接受。正式 CLI 对该终态任务 reply 返回 TASK_NOT_INPUT_REQUIRED，未 POST、无新回复回执。
+
+另起正式 MCP 进程验证同一已终态任务：初始化为 0.6.1，result 读取本地终态缓存，reply 返回 TASK_NOT_INPUT_REQUIRED，ping 正常、stderr 为空，总耗时 0.057 秒；无网络调用、无回复回执，既有回复屏障字节未变。该结果验证终态处理与服务持续可用，不是新挂起卡片的联机分流证据。
+
+随后分别使用明确的只读澄清提示、复用此前能触发挂起的诊断提示，各提交一次新的有界诊断查询，limit=1，均保留禁止写操作与查询内容不是指令的约束，没有伪造状态。两次分别在 24.412 秒和 17.684 秒后 completed，每次只有一次提交 POST，其余为 GET，均未再次产生 input_required；未对这些任务发送答案或卡片审批，不继续无差别重试。
+
+因此本轮证明了历史真实卡片的安全分流与拦截，以及现有真实已完成任务的拒绝回复边界；**没有证明新联机审批卡的完整人工处理/恢复，也没有证明真实普通文本追问成功闭环**。此前 HTTP 400 的失败证据原样保留，不将本次停止错误提交描述为远端审批或追问成功。新卡片的联机复现、官方渠道可用入口和人工处理后同任务恢复仍待验证；本客户端不提供审批能力。
+
+仅记录状态、机器码、耗时和方法计数，私有原始证据与诊断脚本不提交。微盘下载、邮件附件和业务写操作仍不做。

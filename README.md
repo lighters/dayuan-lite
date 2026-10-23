@@ -117,14 +117,23 @@ dayuan result --wait 60 read-project-001
 
 ## 大渊澄清追问
 
-仅在原群查询返回 `input_required` 时，取得澄清答案后继续原任务：
+原群查询返回 `input_required` 后，先检查 `interaction`。仅 `kind=clarification` 且 `reply_allowed=true` 时，取得当前文本澄清问题的答案后继续原任务：
 
 ```bash
 dayuan reply --wait 60 --json '{"parent_request_id":"read-project-001","request_id":"reply-project-001","answer":"选择第一个候选群，时间范围沿用原查询"}'
 dayuan result reply-project-001 --wait 60
 ```
 
-`parent_request_id` 始终为最初群查询 ID；每轮回复用一个新的稳定 `request_id`，重试时保持该 ID 和答案不变。答案为 1–2000 字符的单行文本；只用于澄清原有只读查询，不开放其他业务操作。连接器先获取原任务最新状态，仅在 `input_required` 时携带原 `taskId` / `contextId` 提交；完成态、`auth_required` 和账号变化均拒绝。后续可按回复 ID 查结果；再次澄清仍引用最初父 ID。
+`parent_request_id` 始终为最初群查询 ID；每轮回复用一个新的稳定 `request_id`，重试时保持该 ID 和答案不变。答案为 1–2000 字符的单行文本；只用于澄清原有只读查询，不开放其他业务操作。连接器先获取原任务最新状态，仅在明确的文本澄清时携带原 `taskId` / `contextId` 提交；完成态、`auth_required` 和账号变化均拒绝。后续可按已提交的回复 ID 查结果；再次澄清仍引用最初父 ID。
+
+| interaction.kind | 处理方式 |
+| --- | --- |
+| `clarification` | 当前 `status.message` 只有受支持的非空文本，允许只读澄清回复；不拿旧摘要当问题 |
+| `approval` | `protocol=out_of_band`，需人工在企业微信或官方客户端查看原任务卡片并核对权限；客户端不提交审批、拒绝或取消任务，卡片令牌不输出、不落盘 |
+| `unsupported` | 未知结构、混合卡片或缺少当前问题，停止发送，交由人工核对原任务 |
+| `authorization` | `auth_required` 的授权恢复，不能用文本 reply 发送凭据 |
+
+对审批卡或未知结构调用 `reply`，返回 `APPROVAL_REQUIRED` / `UNSUPPORTED_INTERACTION`、`reply_sent=false` 和原任务 `request_id`，不会 POST，也不创建回复回执或改动回复屏障；`reply_request_id` 只是未发送的调用 ID，不能用它查任务。人工处理后用 `dayuan result <原查询ID>` 查询；若无官方卡片入口、权限不明或涉及写操作，停止并报告，不猜测卡片协议或另起任务绕过。普通文本回复不是审批卡的回答方式。
 
 父任务锁与回复锁串行化提交；回复只落盘哈希，不存答案原文。发出前保存回执和独立回复屏障，普通结果轮询不会覆盖屏障。同 ID 不同答案报冲突。确定未被接受的 `rejected` 可用相同 ID 重试；`outcome_unknown` / 崩溃中的 `dispatching` 不重放，并阻止换回复 ID。可以查询父任务，但父任务状态不能证明该回复已接受；需要人工核对后结束处理，不提供自动清除屏障。正常接受的回复不阻止之后的新一轮澄清。
 

@@ -19,7 +19,7 @@ description: 使用大渊统一 CLI/MCP 查询企业微信群聊及企微文档�
 
 1. 一次逻辑查询选一个稳定的 `request_id`，提交后保存该 ID。CLI 可 `--wait 60`，MCP 可 `wait_seconds:30`。
 2. `submitted` / `working`：用同一 ID 调用 `dayuan_read_result` / `dayuan result <id>`；等待到时继续查询，不重新提交。
-3. `input_required`：将澄清问题交给用户，或使用用户已经明确给出的答案。用 `dayuan_read_reply` / `dayuan reply --json`，`parent_request_id` 始终为最初查询 ID，每次回复使用新的稳定 `request_id`，`answer` 仅回答澄清问题。后续按回复 ID 查结果；下一轮澄清仍使用原始父 ID。
+3. `input_required`：先检查 `interaction`，仅 `kind=clarification` 且 `reply_allowed=true` 时将当前文本问题交给用户，或使用用户已明确给出的答案。用 `dayuan_read_reply` / `dayuan reply --json`，`parent_request_id` 始终为最初查询 ID，每次回复使用新的稳定 `request_id`，`answer` 仅回答原只读查询的澄清问题。提交后按回复 ID 查结果；下一轮澄清仍使用原始父 ID。`approval` 为带外交互卡，客户端不审批、拒绝或取消；请人工在企业微信或官方客户端查看原任务卡片并核对权限，权限不明或涉及写操作时停止。`unsupported` 停止，不猜协议；找不到官方卡片入口则报告限制，不另起任务绕过。被拦截的 reply 返回 `reply_sent=false`，不创建回复回执，后续按返回的原查询 `request_id` 查状态，不用 `reply_request_id` 查询或发送卡片令牌。
 4. `auth_required`：处理授权，不把凭据发给远端任务。`outcome_unknown`：停止重发、换号或另起任务；父任务状态不能证明某次回复已接受。只有 `rejected` 且 `retry_safe:true` 才能在解决原因后用相同输入、相同 ID 重试。
 5. 保留 `evidence`、`raw_messages_verified`、`limitation`、截断和部分失败信息。群结果是远端生成的归纳，不能称为逐字聊天记录或全量导出。
 

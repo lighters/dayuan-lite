@@ -150,4 +150,6 @@ wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回值>"}]}'
 
 先调 `dayuan_capabilities`（默认本地），确需在线检查时给 `online:true`。授权错误按 recovery 的命令恢复；不能把 doctor 成功或授权为 ready 当成业务查询验收。
 
-遇到 `input_required`，取得答案后用 `dayuan_read_reply`，例如 `{ "parent_request_id":"project-read-001", "request_id":"project-reply-001", "answer":"选择第一个候选群" }`。回复使用独立稳定 ID；等待或查询按回复 ID，下一轮澄清仍引用原查询 ID。不确定回复不重发、不换号；auth_required 走授权恢复。保持远端摘要与真实接口数据的来源差别。
+遇到 `input_required`，先看 `interaction.kind` 和 `reply_allowed`。仅 `clarification` 且允许回复时取得当前文本问题的答案，再用 `dayuan_read_reply`，例如 `{ "parent_request_id":"project-read-001", "request_id":"project-reply-001", "answer":"选择第一个候选群" }`。回复使用独立稳定 ID；已提交后按回复 ID 查结果，下一轮澄清仍引用原查询 ID。不确定回复不重发、不换号；auth_required 走授权恢复。保持远端摘要与真实接口数据的来源差别。
+
+`approval` 是带外交互卡，不是文本澄清。向用户说明需人工在企业微信或官方客户端查看原任务卡片、核对权限，不能自动审批，权限不明或涉及写操作时停止。客户端不暴露卡片令牌，也不提供审批、拒绝或取消工具。`unsupported` 同样停止，不猜答案。若调用 reply 被拦截，返回 `reply_sent=false`、原任务 `request_id` 和未发送的 `reply_request_id`，不创建回复回执；后续按原查询 ID 查状态。没有官方卡片入口则报告限制，不另起任务绕过。
