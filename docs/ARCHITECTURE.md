@@ -117,7 +117,11 @@ sequenceDiagram
 
 ## 原任务澄清回复
 
-新增 `reply` / `dayuan_read_reply`，输入独立 request_id、最初 parent_request_id 和有界 answer。仍使用既有 `POST /message:send` 白名单：消息附原任务 `taskId` / `contextId`，不增加其他 A2A 方法。先按父 ID 再按回复 ID 取得持久锁，检查回复哈希/身份，通过 GET 取得父任务最新状态，仅 input_required 可继续。根任务不能是回复回执；不接受客户端传 task/context 或任意上游方法。
+新增 `reply` / `dayuan_read_reply`，输入独立 request_id、最初 parent_request_id 和有界 answer。仍使用既有 `POST /message:send` 白名单：消息附原任务 `taskId` / `contextId`，不增加其他 A2A 方法。先按父 ID 再按回复 ID 取得持久锁，检查回复哈希/身份，通过 GET 取得父任务最新状态，仅 input_required 且明确的当前文本澄清可继续。根任务不能是回复回执；不接受客户端传 task/context 或任意上游方法。
+
+从 0.6.1 起，normalize 对 input_required / auth_required 输出 `interaction`（kind、reply_allowed、protocol）及固定中文 next_action。只检查当前 `status.message`，不从旧 history/artifacts 推断澄清问题；非空纯文本为 clarification。部分或消息 metadata 的 `wecom_part_type=approval`、data 中出现 `token_id_list`（含畸形值）均优先识别为 approval，混有文本也不能文本回复。未知结构、混合非文本或缺少当前问题为 unsupported；auth_required 为 authorization（存在审批标记时仍优先识别 approval）。除明确文本问题外，输出 text 置空，只提供固定人工处理指引，不复制卡片 data、metadata、令牌、链接或原始载荷。
+
+审批卡使用带外协议，本客户端不实现审批或取消端点，也不向 MCP 宿主转交令牌或宣告自动 elicitation 能力。人工需在官方渠道查看原任务卡片，权限不明或涉及写操作则停止；无法找到入口不能绕过。拦截 reply 时仅 GET 原任务，返回原查询 request_id、未发送的 reply_request_id、reply_sent=false 和 APPROVAL_REQUIRED / UNSUPPORTED_INTERACTION；不创建回复回执、不覆盖既有回执或屏障（父任务状态仍按普通 result 保存）。等待在 input_required 停止，不自动审批或轮询到超时；人工处理后仅按原查询 ID GET 状态。确定接受/不确定回复的原有幂等保护先于交互分类，不能借卡片拦截清除未决屏障。
 
 每次回复先以 exclusive 创建 `requests/<reply-id>.json`（重试确定拒绝时在锁下替换），写入 parent_request_id、哈希、凭据身份、message_id 与 dispatching，不保存答案。再将 `reply-barriers/<root-id>.json` 原子写为 unresolved，之后才能 POST。屏障独立于任务回执，避免无锁结果轮询覆盖不确定提交。响应必须保持同 task/context；错配按不确定处理。回复确定被拒后可同 ID 重试；网络/无效响应/崩溃不自动重放，其他回复 ID 也被阻止。父任务 GET 只能观察任务，不能消除某次回复的不确定性。
 

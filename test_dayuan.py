@@ -686,7 +686,7 @@ class UnifiedKitTests(unittest.TestCase):
     hold_request_lock = DayuanTests.hold_request_lock
     rpc = DayuanTests.rpc
     def waiting(self):
-        return {**TASK, "status": {"state": "TASK_STATE_INPUT_REQUIRED"}}
+        return {**TASK, "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"parts": [{"text": "请选择候选群"}]}}}
 
     def reply_query(self, **changes):
         return {"request_id": "reply-query-001", "parent_request_id": QUERY["request_id"], "answer": "选择第一个候选群", **changes}
@@ -694,6 +694,113 @@ class UnifiedKitTests(unittest.TestCase):
     def seed_waiting(self):
         with patch.object(self.client, "request", return_value=self.waiting()):
             self.client.start(QUERY)
+
+    def test_interaction_uses_current_question_instead_of_old_artifacts(self):
+        task = {**self.waiting(), "artifacts": [{"parts": [{"text": "上轮摘要"}]}]}
+        value = dayuan.normalize(task)
+        self.assertEqual(value["text"], "请选择候选群")
+        self.assertEqual(value["interaction"], {"kind": "clarification", "reply_allowed": True, "protocol": "text"})
+        self.assertTrue(value["requires_user_action"])
+        self.assertFalse(value["raw_messages_verified"])
+
+    def test_approval_detection_does_not_expose_card_payload(self):
+        cards = [
+            {"metadata": {"wecom_part_type": "approval"}, "data": {"token_id_list": ["fake-card-secret"]}},
+            {"data": {"token_id_list": []}},
+            {"data": {"token_id_list": "fake-card-secret"}},
+            {"metadata": {"wecom_part_type": "approval"}, "text": "fake-card-secret"},
+        ]
+        for card in cards:
+            with self.subTest(card=cards.index(card)):
+                task = {**self.waiting(), "status": {"state": 6, "message": {"parts": [{"text": "fake-card-secret"}, card]}}}
+                value = dayuan.normalize(task)
+                self.assertEqual(value["interaction"], {"kind": "approval", "reply_allowed": False, "protocol": "out_of_band"})
+                self.assertEqual(value["state"], "input_required")
+                self.assertEqual(value["text"], "")
+                self.assertIn("人工", value["next_action"])
+                self.assertNotIn("fake-card-secret", json.dumps(value))
+                self.assertNotIn("token_id_list", json.dumps(value))
+
+    def test_unknown_or_missing_interaction_fails_closed(self):
+        for parts in [[], None, [None], [{"data": {"question": "opaque"}}], [{"text": ""}], [{"text": "question"}, {"url": "https://example.invalid/card"}], [{"text": "question", "metadata": {"wecom_part_type": "future_card"}}], [{"text": "question", "metadata": {"future_card": True}}]]:
+            with self.subTest(parts=parts):
+                task = {**self.waiting(), "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"parts": parts}}}
+                value = dayuan.normalize(task)
+                self.assertEqual(value["interaction"]["kind"], "unsupported")
+                self.assertFalse(value["interaction"]["reply_allowed"])
+                self.assertEqual(value["text"], "")
+        value = dayuan.normalize({**self.waiting(), "status": {"state": "TASK_STATE_AUTH_REQUIRED", "message": {"parts": [{"text": "question"}]}}})
+        self.assertEqual(value["interaction"]["kind"], "authorization")
+        self.assertFalse(value["interaction"]["reply_allowed"])
+
+    def test_card_reply_only_reads_and_does_not_create_receipt_or_barrier(self):
+        self.seed_waiting()
+        for part, kind, code in [({"data": {"token_id_list": ["fake-card-secret"]}}, "approval", "APPROVAL_REQUIRED"), ({"data": {"question": "unknown"}}, "unsupported", "UNSUPPORTED_INTERACTION")]:
+            task = {**self.waiting(), "status": {"state": 6, "message": {"parts": [part]}}}
+            with patch.object(self.client, "request", return_value=task) as call:
+                value = self.client.reply(self.reply_query())
+            self.assertEqual([c.args[0] for c in call.call_args_list], ["GET"])
+            self.assertEqual(value["request_id"], QUERY["request_id"])
+            self.assertEqual(value["reply_request_id"], "reply-query-001")
+            self.assertFalse(value["reply_sent"])
+            self.assertEqual(value["error"], code)
+            self.assertEqual(value["interaction"]["kind"], kind)
+            self.assertFalse(self.client.record_path("reply-query-001").exists())
+            self.assertFalse((self.root / "reply-barriers").exists())
+            for path in (self.root / "requests").glob("*.json"):
+                self.assertNotIn("fake-card-secret", path.read_text())
+        with patch.object(self.client, "request", side_effect=[self.waiting(), TASK]) as call:
+            self.assertEqual(self.client.reply(self.reply_query())["state"], "completed")
+        self.assertEqual([c.args[0] for c in call.call_args_list], ["GET", "POST"])
+
+    def test_cli_and_mcp_route_cards_without_post_or_extra_polling(self):
+        self.seed_waiting()
+        task = {**self.waiting(), "status": {"state": 6, "message": {"parts": [{"metadata": {"wecom_part_type": "approval"}, "data": {"token_id_list": ["fake-card-secret"]}}]}}}
+        with patch.object(dayuan.Client, "request", return_value={"task": task}) as call, patch.dict(os.environ, {"DAYUAN_ACCESS_TOKEN": "test-private-token"}):
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                dayuan.main(["--state-dir", str(self.root), "reply", "--json", json.dumps(self.reply_query()), "--wait", "30"])
+            value = json.loads(output.getvalue())
+            self.assertFalse(value["reply_sent"])
+            messages = [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "dayuan_read_result", "arguments": {"request_id": QUERY["request_id"], "wait_seconds": 30}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "dayuan_read_reply", "arguments": {**self.reply_query(), "wait_seconds": 30}}},
+                {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO("\n".join(json.dumps(m) for m in messages))), patch("sys.stdout", output):
+                dayuan.serve(self.root)
+            replies = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([c.args[0] for c in call.call_args_list], ["GET", "GET", "GET"])
+        for response in replies[:2]:
+            value = json.loads(response["result"]["content"][0]["text"])
+            self.assertEqual(value["request_id"], QUERY["request_id"])
+            self.assertEqual(value["interaction"]["kind"], "approval")
+            self.assertNotIn("fake-card-secret", json.dumps(response))
+        self.assertEqual(replies[2]["result"], {})
+        self.assertFalse(self.client.record_path("reply-query-001").exists())
+        self.assertFalse((self.root / "reply-barriers").exists())
+
+    def test_card_guard_preserves_rejected_receipt_and_unresolved_barrier(self):
+        self.seed_waiting()
+        with patch.object(self.client, "request", side_effect=[self.waiting(), dayuan.Error("UPSTREAM_HTTP_400", definitive=True)]):
+            self.assertEqual(self.client.reply(self.reply_query())["state"], "rejected")
+        receipt = self.client.record_path("reply-query-001")
+        barrier = self.root / "reply-barriers" / (QUERY["request_id"] + ".json")
+        before = receipt.read_bytes(), barrier.read_bytes()
+        task = {**self.waiting(), "status": {"state": 6, "message": {"parts": [{"data": {"token_id_list": ["fake-card-secret"]}}]}}}
+        with patch.object(self.client, "request", return_value=task) as call:
+            self.assertFalse(self.client.reply(self.reply_query())["reply_sent"])
+        self.assertEqual([c.args[0] for c in call.call_args_list], ["GET"])
+        self.assertEqual((receipt.read_bytes(), barrier.read_bytes()), before)
+        record = dayuan.load_private(receipt)
+        record["state"] = "outcome_unknown"
+        dayuan.save_private(receipt, record)
+        dayuan.save_private(barrier, {"request_id": "reply-query-001", "unresolved": True})
+        with patch.object(self.client, "request") as call:
+            with self.assertRaisesRegex(dayuan.Error, "REPLY_OUTCOME_UNKNOWN"):
+                self.client.reply(self.reply_query(request_id="reply-query-002"))
+            self.assertEqual(self.client.reply(self.reply_query())["state"], "outcome_unknown")
+        call.assert_not_called()
 
     def test_reply_continues_same_task_and_deduplicates(self):
         self.seed_waiting()
