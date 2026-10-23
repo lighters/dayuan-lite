@@ -164,7 +164,7 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 
 10073 在这次分层探测中没有复现。已证明原账号校验与换票路径恢复；无法据此确认服务端内部根因、全局故障已修复或未来不会复发。保留前文失败记录，不把它追溯改写为权限不足或凭据过期。恢复后仍保留服务 5xx 不清凭据、不自动重新扫码，以及 refresh_unknown 不重放的原约束。
 
-恢复后再用正式 CLI `doctor --online` 验证：authorization_verified=true、auth_error 缺省、CLI 版本 1.3.4、stderr 为空，business_permissions_verified 仍为 false。新 MCP 进程随后真实调用 `dayuan_capabilities(online=true)` 和 `dayuan_wecom_read(doc-search, limit=1)`，初始化版本 0.6.0、换票成功、读取返回 source=wecom_cli_user_token / read_only=true，ping 正常、stderr 为空，总耗时 4.455 秒。它证明这次正式入口的恢复与一个业务样本可读，不证明所有资源权限或跨七天稳定性。
+恢复后再用正式 CLI `doctor --online` 验证：authorization_verified=true、auth_error 缺省、CLI 版本 1.3.4、stderr 为空，business_permissions_verified 仍为 false。新 MCP 进程随后真实调用 `dayuan_capabilities(online=true)` 和 `dayuan_wecom_read(doc-search, limit=1)`，初始化版本 0.6.0、换票成功、调用返回 source=wecom_cli_user_token / read_only=true、业务 errcode=0，ping 正常、stderr 为空，总耗时 4.455 秒。该回包只有安全提示/身份上下文等字段，未返回 docs 列表；它证明这次正式入口的换票和调用链恢复，不证明非空文档条目、正文可读、所有资源权限或跨七天稳定性。
 
 ### 真实追问：已补测，未通过
 
