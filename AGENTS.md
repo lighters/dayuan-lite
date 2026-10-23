@@ -41,6 +41,7 @@ CI 在 Python 3.9 / 3.12 / 3.13 上跑同样两条命令；`check.py` 会核对�
 
 **幂等与不确定结果**
 - `Error(code, definitive=True)` 只表示**确定没有被远端接受**。拿不准就是 `False`。这个标志决定能否重提，标错会导致重复提交或用户被卡住。
+- 只读澄清回复仅在原任务 `input_required` 时通过既有 `POST /message:send` 携带原 task/context；每轮独立回复 ID、父/回复锁及独立持久屏障，不新增业务写接口。`reply-barriers/` 不由 gc 清理。
 - 发送前先用 `exclusive=True` 创建本地回执；`outcome_unknown` 永不自动重放；轮询/等待只读结果、绝不重新提交；同 ID 不同输入返回 `REQUEST_CONFLICT`。
 - 续期：请求前先落盘 `refresh_unknown`；拿到新凭据先保存再做后续请求；结果不确定时不重放 refresh token。
 - 任务与账号身份绑定：身份变化时拒绝恢复旧任务。

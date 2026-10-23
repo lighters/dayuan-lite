@@ -399,7 +399,7 @@ class DayuanTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         replies = [json.loads(x) for x in proc.stdout.splitlines()]
         self.assertEqual(len(replies), 3)
-        self.assertEqual(len(replies[1]["result"]["tools"]), 4)
+        self.assertEqual(len(replies[1]["result"]["tools"]), 6)
         self.assertNotIn("test-private-token", proc.stdout + proc.stderr)
 
 
@@ -589,7 +589,7 @@ class ReceiptMaintenanceTests(unittest.TestCase):
         self.assertTrue((self.root / ".request-locks" / "old-completed-01.lock").exists())
 
     def test_maintenance_commands_are_not_mcp_tools(self):
-        self.assertEqual([t["name"] for t in dayuan.TOOLS], ["dayuan_status", "dayuan_read_start", "dayuan_read_result"])
+        self.assertEqual([t["name"] for t in dayuan.TOOLS], ["dayuan_capabilities", "dayuan_status", "dayuan_read_start", "dayuan_read_result", "dayuan_read_reply"])
 
 
 class EntryPointTests(unittest.TestCase):
@@ -678,3 +678,225 @@ class EntryPointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnifiedKitTests(unittest.TestCase):
+    setUp = DayuanTests.setUp
+    tearDown = DayuanTests.tearDown
+    hold_request_lock = DayuanTests.hold_request_lock
+    rpc = DayuanTests.rpc
+    def waiting(self):
+        return {**TASK, "status": {"state": "TASK_STATE_INPUT_REQUIRED"}}
+
+    def reply_query(self, **changes):
+        return {"request_id": "reply-query-001", "parent_request_id": QUERY["request_id"], "answer": "选择第一个候选群", **changes}
+
+    def seed_waiting(self):
+        with patch.object(self.client, "request", return_value=self.waiting()):
+            self.client.start(QUERY)
+
+    def test_reply_continues_same_task_and_deduplicates(self):
+        self.seed_waiting()
+        with patch.object(self.client, "request", side_effect=[self.waiting(), TASK]) as call:
+            value = self.client.reply(self.reply_query())
+        self.assertEqual(value["task_id"], TASK["id"])
+        body = call.call_args.args[2]
+        self.assertEqual(body["message"]["taskId"], TASK["id"])
+        self.assertEqual(body["message"]["contextId"], TASK["contextId"])
+        self.assertIn("禁止发送", body["message"]["parts"][0]["text"])
+        with patch.object(self.client, "request", return_value=TASK) as call:
+            again = self.client.reply(self.reply_query())
+        self.assertEqual(again["task_id"], TASK["id"])
+        self.assertNotIn("POST", [c.args[0] for c in call.call_args_list])
+        record = self.client.record_path("reply-query-001").read_text()
+        self.assertNotIn("选择第一个", record)
+        self.assertNotIn("test-private-token", record)
+
+    def test_reply_rejects_invalid_terminal_and_changed_identity(self):
+        self.seed_waiting()
+        for changes in [{"answer": ""}, {"answer": "x" * 2001}, {"answer": True}, {"answer": "x\nwrite"}, {"extra": 1}, {"request_id": QUERY["request_id"]}]:
+            with patch.object(self.client, "request") as call:
+                with self.assertRaises(dayuan.Error):
+                    self.client.reply(self.reply_query(**changes))
+                call.assert_not_called()
+        with patch.object(self.client, "request", return_value=TASK):
+            with self.assertRaisesRegex(dayuan.Error, "TASK_NOT_INPUT_REQUIRED"):
+                self.client.reply(self.reply_query())
+        self.client.token = "another-account-token"
+        with patch.object(self.client, "request") as call:
+            with self.assertRaisesRegex(dayuan.Error, "CREDENTIAL_CHANGED"):
+                self.client.reply(self.reply_query())
+            call.assert_not_called()
+
+    def test_uncertain_reply_blocks_replay_and_other_reply_ids(self):
+        self.seed_waiting()
+        with patch.object(self.client, "request", side_effect=[self.waiting(), dayuan.Error("TRANSPORT_UNCERTAIN")]):
+            value = self.client.reply(self.reply_query())
+        self.assertEqual(value["state"], "outcome_unknown")
+        with patch.object(self.client, "request") as call:
+            self.assertEqual(self.client.reply(self.reply_query())["state"], "outcome_unknown")
+            self.assertEqual(self.client.result("reply-query-001")["state"], "outcome_unknown")
+            with self.assertRaisesRegex(dayuan.Error, "REPLY_OUTCOME_UNKNOWN"):
+                self.client.reply(self.reply_query(request_id="reply-query-002"))
+            with self.assertRaisesRegex(dayuan.Error, "REQUEST_CONFLICT"):
+                self.client.reply(self.reply_query(answer="另一个选择"))
+            call.assert_not_called()
+
+    def test_rejected_reply_can_retry_same_id_and_context_mismatch_is_uncertain(self):
+        self.seed_waiting()
+        with patch.object(self.client, "request", side_effect=[self.waiting(), dayuan.Error("AUTH_REQUIRED", definitive=True)]):
+            self.assertTrue(self.client.reply(self.reply_query())["retry_safe"])
+        with patch.object(self.client, "request", side_effect=[self.waiting(), {**TASK, "id": "wrong-task"}]):
+            value = self.client.reply(self.reply_query())
+        self.assertEqual(value["state"], "outcome_unknown")
+        self.assertEqual(value["error"], "TASK_CONTEXT_MISMATCH")
+
+    def test_reply_parent_lock_prevents_concurrent_send(self):
+        self.seed_waiting()
+        self.hold_request_lock()
+        self.client.REQUEST_LOCK_WAIT = 0
+        with patch.object(self.client, "request") as call:
+            with self.assertRaisesRegex(dayuan.Error, "REQUEST_BUSY"):
+                self.client.reply(self.reply_query())
+            call.assert_not_called()
+
+    def test_capabilities_local_never_refreshes_or_spawns(self):
+        with patch.object(dayuan.Client, "prepare_auth") as auth, patch("wecom_bridge.run_cli") as spawn:
+            value = dayuan.capabilities(self.root)
+        auth.assert_not_called()
+        spawn.assert_not_called()
+        self.assertFalse(value["business_permissions_verified"])
+        self.assertEqual(len(value["wecom_operations"]), 18)
+        self.assertIn("dayuan", value["recovery"]["commands"][0])
+        self.assertFalse(value["downloads_supported"])
+
+    def test_setup_generates_portable_mcp_and_installs_skill_without_overwriting(self):
+        target = self.root / "agent skills"
+        value = dayuan.setup(self.root / "account space", target)
+        entry = value["mcpServers"]["dayuan-lite"]
+        self.assertEqual(entry["command"], sys.executable)
+        self.assertEqual(entry["args"], ["-m", "dayuan", "--state-dir", str((self.root / "account space").resolve()), "serve"])
+        skill = target / "dayuan-readonly" / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        skill.write_text("user-owned")
+        with self.assertRaisesRegex(dayuan.Error, "SKILL_TARGET_EXISTS"):
+            dayuan.setup(self.root, target)
+        self.assertEqual(skill.read_text(), "user-owned")
+
+    def test_mcp_new_tools_are_callable_and_reject_unknown_arguments(self):
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "dayuan_capabilities", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "dayuan_read_reply", "arguments": {**self.reply_query(), "wait_seconds": 31}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        ]
+        replies = self.rpc(*messages)
+        data = json.loads(replies[0]["result"]["content"][0]["text"])
+        self.assertFalse(data["business_permissions_verified"])
+        self.assertTrue(replies[1]["result"]["isError"])
+        self.assertEqual(replies[2]["result"], {})
+
+    def test_online_capabilities_checks_token_and_version_without_business_reads(self):
+        with patch("workbuddy_auth.CloudAuth.ensure_wecom", return_value={"access_token": "test-private-token"}) as auth, patch("wecom_bridge.inspect_cli", return_value={"version": "1.3.4", "compatible": True}) as version, patch.object(dayuan.Client, "request") as request:
+            value = dayuan.capabilities(self.root, online=True)
+        auth.assert_called_once_with(force=True)
+        version.assert_called_once()
+        request.assert_not_called()
+        self.assertTrue(value["authorization_verified"])
+        self.assertFalse(value["business_permissions_verified"])
+        self.assertNotIn("test-private-token", json.dumps(value))
+        from workbuddy_auth import AuthError
+        with patch("workbuddy_auth.CloudAuth.ensure_wecom", side_effect=AuthError("REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED")), patch("wecom_bridge.inspect_cli", side_effect=dayuan.Error("WECOM_CLI_NOT_FOUND")):
+            value = dayuan.capabilities(self.root, online=True)
+        self.assertEqual(value["auth_error"], "REFRESH_OUTCOME_UNKNOWN_LOGIN_REQUIRED")
+        self.assertFalse(value["authorization_verified"])
+        self.assertIn("login --open", value["recovery"]["commands"][0])
+        self.assertIn("WECOM_CLI_NOT_FOUND", value["wecom_cli"]["error"])
+
+    def test_recovery_uses_real_phases_and_quotes_state_paths(self):
+        import shlex
+        for phase in ("pending_token", "pending_account"):
+            command = dayuan.recovery(self.root / "account space", phase=phase)["commands"][0]
+            argv = shlex.split(command)
+            self.assertEqual(argv[-3:], ["finish", "--wait", "60"])
+            self.assertEqual(argv[2], str((self.root / "account space").resolve()))
+        self.assertIn("wecom-login", dayuan.recovery(self.root, "WECOM_AUTH_REQUIRED_OPEN_WECOM_LOGIN")["commands"][0])
+
+    def test_reply_second_round_uses_root_and_rejects_reply_as_parent(self):
+        self.seed_waiting()
+        with patch.object(self.client, "request", return_value=self.waiting()):
+            self.client.reply(self.reply_query())
+        with self.assertRaisesRegex(dayuan.Error, "REPLY_ROOT_REQUIRED"):
+            self.client.reply(self.reply_query(request_id="reply-query-003", parent_request_id="reply-query-001"))
+        with patch.object(self.client, "request", side_effect=[self.waiting(), TASK]) as call:
+            value = self.client.reply(self.reply_query(request_id="reply-query-002", answer="时间范围按原查询"))
+        self.assertEqual(value["state"], "completed")
+        self.assertEqual(call.call_args.args[2]["message"]["taskId"], TASK["id"])
+
+    def test_reply_crash_receipt_and_missing_barrier_receipt_fail_closed(self):
+        self.seed_waiting()
+        fingerprint = dayuan.query_fingerprint(self.reply_query())
+        dayuan.save_private(self.client.record_path("reply-query-001"), {"request_id": "reply-query-001", "parent_request_id": QUERY["request_id"], "input_hash": fingerprint, "credential_fingerprint": dayuan.digest(self.client.token), "state": "dispatching"})
+        dayuan.save_private(self.root / "reply-barriers" / (QUERY["request_id"] + ".json"), {"request_id": "reply-query-001", "unresolved": True})
+        with patch.object(self.client, "request") as call:
+            self.assertEqual(self.client.reply(self.reply_query())["state"], "outcome_unknown")
+            with self.assertRaisesRegex(dayuan.Error, "REPLY_OUTCOME_UNKNOWN"):
+                self.client.reply(self.reply_query(request_id="reply-query-002"))
+            call.assert_not_called()
+        self.client.record_path("reply-query-001").unlink()
+        with self.assertRaisesRegex(dayuan.Error, "REPLY_OUTCOME_UNKNOWN"):
+            self.client.reply(self.reply_query(request_id="reply-query-002"))
+
+    def test_mcp_reply_dispatch_and_cli_reply_input_errors(self):
+        message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "dayuan_read_reply", "arguments": {**self.reply_query(), "wait_seconds": 20}}}
+        with patch.object(dayuan.Client, "reply", return_value={"state": "working"}) as reply, patch("sys.stdin", io.StringIO(json.dumps(message) + "\n")), patch("sys.stdout", new_callable=io.StringIO) as out:
+            dayuan.serve(self.root)
+        reply.assert_called_once_with(self.reply_query(), 20)
+        self.assertEqual(json.loads(out.getvalue())["result"]["content"][0]["type"], "text")
+        proc = subprocess.run([sys.executable, str(Path(dayuan.__file__)), "--state-dir", str(self.root), "reply", "--json", json.dumps(self.reply_query(answer=""))], text=True, capture_output=True, timeout=5)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(json.loads(proc.stdout)["error"], "INVALID_REPLY_ARGUMENT")
+        self.assertEqual(proc.stderr, "")
+
+    def test_installer_preserves_spaces_and_passes_optional_flags(self):
+        log = self.root / "install-log.jsonl"
+        bins = self.root / "test bins"
+        bins.mkdir()
+        program = ("#!" + sys.executable + "\nimport json, os, sys\nfrom pathlib import Path\n"
+                   "with open(os.environ['KIT_TEST_LOG'], 'a') as f: f.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]])+'\\n')\n"
+                   "if sys.argv[1:]==['tool','dir','--bin']: print(os.environ['KIT_TEST_BIN'])\n")
+        for name in ("uv", "dayuan", "npm"):
+            path = bins / name
+            path.write_text(program)
+            path.chmod(0o700)
+        env = {**os.environ, "PATH": str(bins) + ":/usr/bin:/bin", "KIT_TEST_LOG": str(log), "KIT_TEST_BIN": str(bins)}
+        script = Path(dayuan.__file__).parent / "scripts" / "install.sh"
+        proc = subprocess.run(["/bin/sh", str(script), "--with-wecom-cli", "--skill-dir", str(self.root / "my skills")], env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertIn(["uv", "tool", "install", "--upgrade", "--reinstall", str(Path(dayuan.__file__).parent)], calls)
+        self.assertIn(["npm", "install", "--global", "@wecom/cli@1.3.4"], calls)
+        self.assertIn(["dayuan", "setup", "--skill-dir", str(self.root / "my skills")], calls)
+        self.assertEqual(calls[-1], ["dayuan", "doctor"])
+
+    def test_cloud_server_error_does_not_restart_a_ready_login(self):
+        from workbuddy_auth import AuthError
+        with patch('workbuddy_auth.CloudAuth.status', return_value={'phase':'ready'}), patch('workbuddy_auth.CloudAuth.ensure_wecom', side_effect=AuthError('HTTP_500_CODE_10073')), patch('wecom_bridge.inspect_cli', return_value={'version':'1.3.4','compatible':True}):
+            value = dayuan.capabilities(self.root, online=True)
+        self.assertIn('doctor --online', value['recovery']['commands'][0])
+        self.assertNotIn('login --open', value['recovery']['commands'][0])
+        self.assertIn('login --open', dayuan.recovery(self.root,'HTTP_500_CODE_10073',phase='refresh_unknown')['commands'][0])
+
+    def test_accepted_rejected_task_keeps_terminal_result_and_is_not_retryable(self):
+        self.seed_waiting()
+        rejected = {**TASK, 'status':{'state':'TASK_STATE_REJECTED'}}
+        with patch.object(self.client, 'request', side_effect=[self.waiting(), rejected]):
+            first = self.client.reply(self.reply_query())
+        with patch.object(self.client, 'request') as call:
+            again = self.client.result('reply-query-001')
+            repeated = self.client.reply(self.reply_query())
+            call.assert_not_called()
+        for value in (again, repeated):
+            self.assertEqual(value['task_id'], first['task_id'])
+            self.assertEqual(value['text'], first['text'])
+            self.assertEqual(value['evidence'], first['evidence'])
+            self.assertFalse(value.get('retry_safe', False))

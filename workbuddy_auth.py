@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from dayuan import DEFAULT_STATE, Error as StateError, __version__, load_private, private_dir, resolve_state, save_private, warn_migration
+from dayuan import DEFAULT_STATE, Error as StateError, __version__, load_private, private_dir, resolve_state, save_private, warn_migration, recovery
 
 ORIGIN = 'https://www.workbuddy.cn'
 PREFIX = '/v2/plugin'
@@ -309,7 +309,10 @@ def run(command, state, open_browser=False, wait=0):
                 flow.ensure_wecom(); value=flow.status()
             print(json.dumps(value,ensure_ascii=False),flush=True)
     except (AuthError,StateError,OSError,ValueError) as exc:
-        print(json.dumps({'error':str(exc) if isinstance(exc,AuthError) else 'LOCAL_STATE_ERROR'},ensure_ascii=False)); return 1
+        code=str(exc) if isinstance(exc,AuthError) else 'LOCAL_STATE_ERROR'
+        try: phase=flow.status().get('phase')
+        except (StateError,OSError,ValueError,TypeError,AttributeError): phase=None
+        print(json.dumps({'error':code,'recovery':recovery(state,code,phase)},ensure_ascii=False)); return 1
     return 0
 
 

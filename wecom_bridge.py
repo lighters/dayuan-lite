@@ -286,6 +286,19 @@ def child_env():
     return {k: v for k, v in os.environ.items() if not k.startswith("WECOM_CLI_") and k not in ("DAYUAN_ACCESS_TOKEN", "NODE_OPTIONS", "NODE_PATH")}
 
 
+def inspect_cli(timeout=10):
+    executable = shutil.which(default_executable())
+    if not executable:
+        raise Error("WECOM_CLI_NOT_FOUND")
+    env = child_env()
+    with tempfile.TemporaryDirectory(prefix="dayuan-version-") as temp:
+        env["WECOM_CLI_CONFIG_DIR"] = temp
+        version = cli_version(executable, env, temp, time.monotonic() + timeout)
+    if version < MIN_CLI_VERSION:
+        raise Error("WECOM_CLI_VERSION_UNSUPPORTED")
+    return {"version": ".".join(str(n) for n in version), "compatible": True, "business_permissions_verified": False}
+
+
 class Bridge:
     def __init__(self, state, executable=None, timeout=60):
         self.state = Path(state)

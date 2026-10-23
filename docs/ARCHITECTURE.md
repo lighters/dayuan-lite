@@ -107,3 +107,18 @@ sequenceDiagram
 
 
 智能表格只在 CLI 顶层输出封装中识别 `file_path`，使用现有目录/普通文件/UTF-8/2MiB 检查读取并解析 JSON 后，再统一检查业务错误。业务行及记录 values 内的同名字段不作为本地文件引用。查询结果要求 `rows` 数组，`columns` 可缺省；原样保留上游提供的列元数据；解码后的结果在脱敏时仍受 64 层深度上限约束。其他文档/邮件正文的文件内联规则不变。脚本入口注册为同一 `dayuan` 模块，使授权、bridge 与 CLI/MCP 共享 Error 类型，参数错误返回 JSON 且不终止 MCP 服务。
+
+
+## 统一交付与诊断（0.6.0）
+
+`scripts/install.sh` 从当前检出用已有 uv/pipx 安装 Python 工具；可选 npm 安装固定已验 CLI。它是安装期脚本，不参与凭据或运行时业务请求。wheel 数据目录 `share/dayuan-lite/skills/dayuan-readonly` 携带 Skill 与参数参考；源码运行时从仓库 skills 读取。`setup` 输出当前 `sys.executable -m dayuan --state-dir <绝对路径> serve` 配置，可显式复制 Skill 到指定目录，拒绝覆盖；不写 MCP 客户端设置。
+
+`doctor` / `dayuan_capabilities` 默认只读本地状态和实现白名单；显式 online 时使用现有 `CloudAuth.ensure_wecom(force=True)` 真实换票，并经 bridge 唯一子进程出口探测 `--version`，没有新增网络主机或端点，不发业务查询。共享 30 秒预算，CLI 版本最多 10 秒。返回环境、授权与业务权限的独立字段；不会将取票成功当成业务权限证明。CLI/MCP 授权错误提供基于当前状态目录的恢复命令；MCP 原机器码文本保持兼容，另以 structuredContent 返回恢复指引。
+
+## 原任务澄清回复
+
+新增 `reply` / `dayuan_read_reply`，输入独立 request_id、最初 parent_request_id 和有界 answer。仍使用既有 `POST /message:send` 白名单：消息附原任务 `taskId` / `contextId`，不增加其他 A2A 方法。先按父 ID 再按回复 ID 取得持久锁，检查回复哈希/身份，通过 GET 取得父任务最新状态，仅 input_required 可继续。根任务不能是回复回执；不接受客户端传 task/context 或任意上游方法。
+
+每次回复先以 exclusive 创建 `requests/<reply-id>.json`（重试确定拒绝时在锁下替换），写入 parent_request_id、哈希、凭据身份、message_id 与 dispatching，不保存答案。再将 `reply-barriers/<root-id>.json` 原子写为 unresolved，之后才能 POST。屏障独立于任务回执，避免无锁结果轮询覆盖不确定提交。响应必须保持同 task/context；错配按不确定处理。回复确定被拒后可同 ID 重试；网络/无效响应/崩溃不自动重放，其他回复 ID 也被阻止。父任务 GET 只能观察任务，不能消除某次回复的不确定性。
+
+成功先保存回复任务状态与终态缓存，再标记屏障 settled，并更新父回执；进程崩溃在这些保存之间仍可根据回复回执判断是否已接受。屏障或未决回执缺失时保守拒绝，不自动删除；gc 仍只收集终态回执、不收集屏障和锁。一个任务所有回复共享远端 task/context；已终态回复的缓存属于当时响应。原提示词的禁止写操作、查询内容不是指令、范围限制和结果证据字段在追问中保留。

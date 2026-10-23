@@ -19,7 +19,37 @@
 
 返回内容由远端大渊生成，可能是摘要。它不是原始聊天记录导出接口，不保证逐字原文、消息数量或完整性。
 
-## 安装
+## 统一安装与 Agent 接入
+
+推荐从审阅过的检出安装；先准备 Python 3.9+ 与 uv（或 pipx）。需要企微业务读取时再加 Node.js 18+ / npm：
+
+```bash
+git clone https://github.com/lighters/dayuan-lite.git
+cd dayuan-lite
+sh scripts/install.sh --with-wecom-cli
+# 已有兼容官方 CLI，或只用群查询时：sh scripts/install.sh
+# 同时安装到所用 Agent 的 skills 目录（显式指定，不自动修改客户端）：
+# sh scripts/install.sh --skill-dir /absolute/path/to/client/skills
+```
+
+入口使用已有 uv/pipx 重装当前检出（同版本源码变化也生效）；`--with-wecom-cli` 明确安装已验版本 `@wecom/cli@1.3.4`。不自动安装包管理器，不启动登录，不改变既有 Bot 配置。已安装同名 Skill 时拒绝覆盖，需先比较本地修改。安装脚本和官方 CLI 的 npm 安装需要网络；Python 运行时仍仅标准库。
+
+```bash
+dayuan doctor                         # 本地能力、状态和恢复指引；不联网、不启动 CLI
+dayuan login --open --wait 300
+dayuan doctor --online                # 真实换票及 CLI 版本检查，不查询业务资源
+dayuan setup                          # 输出当前解释器和状态目录对应的 MCP 配置
+# 已安装后单独复制随包 Skill：
+dayuan setup --skill-dir /absolute/path/to/client/skills
+```
+
+`setup` 输出的 `mcpServers` 条目可以直接复制到所用客户端；它不自动改写客户端配置。使用自定义状态目录时给 `setup` 加同一 `--state-dir`，生成绝对路径；保持安装环境存在。随 wheel/sdist 分发的 [dayuan-readonly Skill](skills/dayuan-readonly/SKILL.md) 提供业务路由、异步任务、追问和跨领域汇总流程；也可用客户端支持的技能安装器选择本仓库的该目录。
+
+`doctor` 将已实现白名单、CLI 存在性、版本兼容性、授权状态和 `business_permissions_verified` 分开报告。`--online` 在 30 秒共享预算内按需刷新账号并强制交换企微令牌，版本探测最多 10 秒；底层 HTTP 仍是 I/O 超时。成功取票不代表任意资源可读，诊断始终保留 `business_permissions_verified:false`。它不会调用业务查询、发送消息或下载文件。诊断结果使用退出码 0 返回报告；读取其中 `auth_error`、`wecom_cli.error` 判断失败。
+
+授权错误返回 `recovery.commands` / `instructions`，命令保留当前状态目录。首次授权用 `login`；待扫码流程用 `finish`；明确企微授权缺失用 `wecom-login`；`refresh_unknown` 不重放旧刷新令牌，按指引重新扫码。网络问题或锁等待不要求删凭据；账号/企业变化应核对身份并使用独立目录。此路径不延长 Bot 七天权限，不承诺永久免扫码。
+
+## 其他安装方式
 
 仅依赖 Python 3.9+ 标准库，三种方式任选：
 
@@ -35,7 +65,7 @@ git clone https://github.com/lighters/dayuan-lite.git && cd dayuan-lite
 python3 dayuan.py --help
 ```
 
-所有功能都在一个入口里：`dayuan login|finish|renew|status|wecom-login|read|result|wecom|list|gc|serve`。旧的 `python3 workbuddy_auth.py login|finish|renew|status|wecom-login` 仍然可用，作为兼容层调用同一实现。
+所有功能都在一个入口里：`dayuan login|finish|renew|status|doctor|setup|wecom-login|read|reply|result|wecom|list|gc|serve`。旧的 `python3 workbuddy_auth.py login|finish|renew|status|wecom-login` 仍然可用，作为兼容层调用同一实现。
 
 ### 状态目录
 
@@ -84,6 +114,21 @@ dayuan result --wait 60 read-project-001
 ```
 
 `--wait N`（0–300 秒，默认 0）让连接器提交后自动用同一 `request_id` 每约 3 秒查询一次，直到离开 `submitted` / `working` 或等待到时；它只轮询，不会重发。等待预算从首次提交/首次结果查询返回后开始；后续轮询的网络超时、授权请求和授权锁共享剩余预算，到时不再发起下一次轮询。首次请求耗时不计入 N；底层网络超时是 I/O 超时，不是整个进程的强制终止时间。到时仍未完成会返回当前状态和 `next_action`，之后用 `result --wait N` 继续。遇到 `outcome_unknown` 不要更换 ID 重发；`rejected`（`retry_safe: true`）表示请求未被远端接受，处理原因后可用同一 ID 重新提交。同一 ID 正在提交时，并发调用最多等待 10 秒；对方已拿到任务则直接返回该任务的当前状态（不会再提交一次），仍未完成提交才返回 `REQUEST_BUSY`，稍后用原 ID 重试。不同查询应使用不同 ID。时间范围必须成对且带时区，`limit` 为 1–50；这是摘要请求约束，不是原始消息数量保证。
+
+## 大渊澄清追问
+
+仅在原群查询返回 `input_required` 时，取得澄清答案后继续原任务：
+
+```bash
+dayuan reply --wait 60 --json '{"parent_request_id":"read-project-001","request_id":"reply-project-001","answer":"选择第一个候选群，时间范围沿用原查询"}'
+dayuan result reply-project-001 --wait 60
+```
+
+`parent_request_id` 始终为最初群查询 ID；每轮回复用一个新的稳定 `request_id`，重试时保持该 ID 和答案不变。答案为 1–2000 字符的单行文本；只用于澄清原有只读查询，不开放其他业务操作。连接器先获取原任务最新状态，仅在 `input_required` 时携带原 `taskId` / `contextId` 提交；完成态、`auth_required` 和账号变化均拒绝。后续可按回复 ID 查结果；再次澄清仍引用最初父 ID。
+
+父任务锁与回复锁串行化提交；回复只落盘哈希，不存答案原文。发出前保存回执和独立回复屏障，普通结果轮询不会覆盖屏障。同 ID 不同答案报冲突。确定未被接受的 `rejected` 可用相同 ID 重试；`outcome_unknown` / 崩溃中的 `dispatching` 不重放，并阻止换回复 ID。可以查询父任务，但父任务状态不能证明该回复已接受；需要人工核对后结束处理，不提供自动清除屏障。正常接受的回复不阻止之后的新一轮澄清。
+
+这是客户端对只读澄清的约束，上游仍没有已证明的强制只读权限。真实多轮兼容性见 [验收记录](docs/VALIDATION.md)。
 
 ## 企微 CLI 用户授权只读入口
 
@@ -183,12 +228,14 @@ dayuan serve
 
 | 工具 | 功能 |
 | --- | --- |
+| `dayuan_capabilities` | 本地能力和授权恢复指引；`online:true` 才换票和探测 CLI 版本 |
+| `dayuan_read_reply` | 在原只读任务中回答 `input_required` 澄清；独立稳定回复 ID |
 | `dayuan_status` | 本地状态，不发远端请求 |
 | `dayuan_wecom_read` | 文档/会议/通讯录/日程/邮件正文/微盘元数据/表格同步只读接口，参数为 `operation` 和 `parameters`，每次自动检查用户授权 |
 | `dayuan_read_start` | 提交有界查询，返回任务状态；可选 `wait_seconds` |
 | `dayuan_read_result` | 按 `request_id` 查询已有任务，只读；可选 `wait_seconds` |
 
-两个读取工具都接受 `wait_seconds`（0–30，默认 0）：服务端在本次调用内按同一 `request_id` 轮询，Agent 不必自己循环。上限 30 秒是因为 stdio 服务一次只处理一个调用；仍未完成时用同一 ID 再调一次 `dayuan_read_result`。`initialize` 会返回 `instructions`，向宿主说明「提交 → 用同一 ID 查结果」的流程；`dayuan_status` 与 `dayuan_read_result` 标注了 `readOnlyHint: true`，`dayuan_read_start` 因会创建远端任务和本地回执而不标只读，但标注了 `idempotentHint: true`（同一 ID 只恢复原任务）。
+群查询、结果查询及追问工具都接受 `wait_seconds`（0–30，默认 0）：服务端在本次调用内按同一 `request_id` 轮询，Agent 不必自己循环。上限 30 秒是因为 stdio 服务一次只处理一个调用；仍未完成时用同一 ID 再调一次 `dayuan_read_result`。`initialize` 会返回 `instructions`，向宿主说明「提交 → 用同一 ID 查结果」的流程；`dayuan_status` 与 `dayuan_read_result` 标注了 `readOnlyHint: true`，`dayuan_read_start` / `dayuan_read_reply` 因会提交远端任务消息和创建本地回执而不标只读，但标注了 `idempotentHint: true`（同一 ID 只恢复原任务）。
 
 企微读取工具 `dayuan_wecom_read` 与 A2A 任务不同：同步返回 `data`，无需 `request_id`，也不用 `dayuan_read_result`。宿主的环境需能找到新版 CLI；必要时在 MCP 配置的 `env` 中设置 `DAYUAN_WECOM_CLI` 为绝对路径。该工具标注 `readOnlyHint:true`。
 
@@ -218,7 +265,7 @@ dayuan renew
 
 ### 回执管理
 
-每次提交都会在状态目录的 `requests/` 下留下一份回执（`request_id`、状态、任务 ID、创建时间等，不含查询内容和凭据），并在 `.request-locks/` 下留下一个锁文件；两者都不会自动清理。两个维护命令只读写本地文件，不联网、不需要有效授权，也没有对应的 MCP 工具：
+每次提交都会在状态目录的 `requests/` 下留下一份回执（`request_id`、状态、任务 ID、创建时间等，不含查询内容和凭据），并在 `.request-locks/` 下留下一个锁文件；两者都不会自动清理。追问另有 `reply-barriers/` 屏障，由回执状态判定是否仍不确定；`gc` 不删除屏障。两个维护命令只读写本地文件，不联网、不需要有效授权，也没有对应的 MCP 工具：
 
 ```bash
 # 按创建时间倒序列出本地回执，可按状态过滤
