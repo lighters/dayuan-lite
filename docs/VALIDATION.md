@@ -1,6 +1,6 @@
 # 验证范围
 
-首次记录日期：2026-10-15；最近联机补验：2026-10-22。A2A 原始联机验收版本：0.2.0；后续新增验证按下文注明版本。
+首次记录日期：2026-10-15；最近联机补验：2026-10-23。A2A 原始联机验收版本：0.2.0；后续新增验证按下文注明版本。
 
 ## 离线验证
 
@@ -39,7 +39,8 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 - 原始消息数量、逐字内容和完整性；结果是远端 Agent 生成的摘要。
 - 已用 `uv build` 构建 wheel，并在 Python 3.9.6 与 3.12 下通过 `uvx --from <wheel> dayuan` 运行 `--help`、`status` 和 MCP `initialize`；没有从 GitHub 地址实际执行 `pipx install` / `uvx --from git+...`，也没有用安装后的命令做真实登录和查询。
 - CLI `read --wait` 已在真实任务上验证（见 2026-10-21 记录）；MCP `wait_seconds` 本轮未单独联机验证。
-- #12 在真实 CLI 输出 EOF 后延迟退出时的宽限边界；本轮真实 CLI 仅完成兼容性冒烟验证。
+- #12 未改动的官方 CLI 自然出现 EOF 后长尾延迟退出时的宽限边界；2026-10-23 已补真实 CLI 输出加受控启动器的边界实验，不能混同为官方 CLI 自然长尾。
+- 真实普通文本追问成功闭环；2026-10-23 已取得真实 input_required，但现场是结构化交互卡，正式文本 reply 返回 HTTP 400，未通过（见补验记录）。
 - 跨天自然到期、企业撤销授权后重新授权的长期运行情况。
 - 所有企业、账号类型和 WorkBuddy 版本的通用可用性。
 - 上游强制执行只读权限；本地只提供查询模板和只读提示。
@@ -145,3 +146,49 @@ python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py -
 真实 input_required → 回复 → 同任务继续尚未联机证明；离线证明不替代上游兼容性。未在真实账号上发送追问答案、执行写操作或下载任何文件/附件。未验证 pipx 实机安装分支、npm 可选安装在干净系统上的全过程、Agent 宿主长期注册和跨七天自然续期。#12 真实 CLI 输出结束后延迟退出的退出宽限边界仍未验证。
 
 公开记录不包含账号/资源标识、群内容、私有状态路径、任务 ID 或凭据。
+
+
+## 云端换票恢复与真实边界补验（2026-10-23）
+
+基线为 main `50c153134265be89949263178574f207b4cafe7c`（#19），Dayuan Lite 0.6.0、Python 3.12.12、官方 wecom-cli 1.3.4（f9b2815）。本次未改运行时代码、网络白名单、授权状态机或官方 CLI，也未重新扫码、清除/恢复旧凭据、修改 Bot 配置、下载微盘文件/邮件附件或执行业务写操作。服务端自然恢复不等于客户端代码修复。
+
+### HTTP_500_CODE_10073 排查
+
+初始私有状态检查：phase 为 ready，账号 access/refresh 凭据在本地有效期内，企微令牌缓存已过期，企业信息存在。分别沿现有白名单调用 account 与 exchange，不打印请求头、响应体或标识：
+
+| 检查 | 本轮结果 |
+| --- | --- |
+| `GET /v2/plugin/account` | 0.805 秒成功，账号与企业身份和原记录一致 |
+| `POST /console/enterprises/{enterpriseId}/oneid_openapi/exchange-wecom-token` | 0.836 秒成功，企微稳定身份一致，新令牌通过原状态原子保存 |
+| 本次调用链 | 没有账号 refresh 请求；结束仍为 ready，没有重新扫码 |
+
+10073 在这次分层探测中没有复现。已证明原账号校验与换票路径恢复；无法据此确认服务端内部根因、全局故障已修复或未来不会复发。保留前文失败记录，不把它追溯改写为权限不足或凭据过期。恢复后仍保留服务 5xx 不清凭据、不自动重新扫码，以及 refresh_unknown 不重放的原约束。
+
+恢复后再用正式 CLI `doctor --online` 验证：authorization_verified=true、auth_error 缺省、CLI 版本 1.3.4、stderr 为空，business_permissions_verified 仍为 false。新 MCP 进程随后真实调用 `dayuan_capabilities(online=true)` 和 `dayuan_wecom_read(doc-search, limit=1)`，初始化版本 0.6.0、换票成功、调用返回 source=wecom_cli_user_token / read_only=true、业务 errcode=0，ping 正常、stderr 为空，总耗时 4.455 秒。该回包只有安全提示/身份上下文等字段，未返回 docs 列表；它证明这次正式入口的换票和调用链恢复，不证明非空文档条目、正文可读、所有资源权限或跨七天稳定性。
+
+### 真实追问：已补测，未通过
+
+先通过正式 `read --wait 45` 对一个有界会话查询取样，任务 completed，未触发挂起。随后仅在诊断任务创建时追加“先请求澄清并等待输入、暂不查询业务数据”的只读验证提示，未改产品源码，也未伪造回包/本地任务状态；远端在 15.361 秒后实际返回 `TASK_STATE_INPUT_REQUIRED`，合计一次提交 POST。
+
+远端 `status.message.parts` 是 data 载荷：metadata 标记 `wecom_part_type=approval`，内容含 `token_id_list`；无普通 text 澄清问题，当前 normalize 返回空 text。使用正式 CLI `reply --wait 45` 对原任务回答时，audit 记录为先 GET 最新父任务、再一次 POST，消息携带的 taskId/contextId 均与父任务一致，但 1.302 秒后返回 `rejected / UPSTREAM_HTTP_400 / retry_safe:true`，没有成功继续。对确定未接受的同一回复 ID 追加一次诊断取证，仍为 HTTP 400，服务端机器码为 400 / INVALID_ARGUMENT；未换号或重放不确定请求。
+
+这证明现场结构化卡片与当前普通文本 reply 不兼容，不能称为“真实追问验收通过”。服务端没有暴露足以确定具体字段失败项的机器码；不将现象解释为 task/context 绑定错误。官方 [A2A 轮询实验室](https://www.codebuddy.ai/docs/cli/a2a-gettask-poll-lab) 与 [2.144.0 发布说明](https://www.codebuddy.ai/docs/cli/release-notes/v2.144.0) 将含 token_id_list 的场景区分为带外审批/交互卡处理，不能拿普通 input_required 文本路径替代。
+
+本次没有提交卡片授权、尝试未知端点或扩大只读白名单，亦未核实卡片请求的具体业务权限。成功的普通文本澄清闭环、结构化卡片展示/回答，以及 MCP 实际追问成功仍未证明，需要单独的协议适配与验证；原有离线追问测试继续仅证明本地构造、幂等和不确定结果保护。保留既有任务与回复回执，不自动清除屏障。
+
+### #12：真实 CLI 输出与受控退出宽限
+
+使用相同用户授权及隔离空 CLI 配置读取有限文档搜索，记录 stdout/stderr EOF 后进入 wait 的预算与实际等待，不保存或公开业务内容。未改动的官方 CLI 正常搜索成功，耗时 2.029 秒；EOF 后等待退出码为 0.000 秒（四舍五入至毫秒），因此这次没有自然触发长尾。
+
+随后仅把受信任的本地诊断启动器作为 executable：它执行未改动的官方 CLI、保留真实返回码和完整输出，业务调用完成后关闭自身 stdout/stderr，再受控睡眠；版本探测不延迟。该实验的延迟属于诊断启动器，不是声称官方二进制自然延迟。
+
+| 场景 | 实测 |
+| --- | --- |
+| 总预算 15 秒、启动器 EOF 后延迟 2.3 秒 | 当前 `max(EXIT_GRACE, remaining)` 成功返回 `source=wecom_cli_user_token`、read_only=true；耗时 4.330 秒，EOF 后实际等待 2.314 秒，wait 预算 12.986 秒 |
+| 同一真实搜索与启动器、仅在诊断进程中将 wait 恢复成旧固定 2 秒 | 4.253 秒返回 WECOM_CLI_TIMEOUT；EOF 后 2.001 秒超时，证实当前实现修复了剩余预算尚充足却丢弃已读结果的边界；未改产品源码 |
+| 官方 `--version` 真实输出，总预算 0.8 秒、EOF 后受控延迟 1 秒 | 1.221 秒成功返回真实版本输出；wait 获得最小 2 秒宽限，实际等待 1.038 秒 |
+| 同上，受控延迟 2.5 秒 | 2.159 秒返回 WECOM_CLI_TIMEOUT；wait 在 2.001 秒超时并回收诊断进程组，确认宽限有界 |
+
+这些结果补充了“真实 CLI 输出 + 受控启动器”的集成证据，并覆盖剩余预算、最小宽限与超界终止。#12 未改动官方 CLI 自然产生 EOF 后长尾延迟的边界仍未验证；不能把受控集成实验改写为该自然行为已通过。
+
+公开记录不包含真实群名/内容、账号与任务标识、交互卡 token、本机私有状态路径或任何凭据。原始取证仅在本机私有目录，未随 PR 提交。
