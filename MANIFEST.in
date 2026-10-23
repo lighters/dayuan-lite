@@ -1,0 +1,2 @@
+include scripts/install.sh
+recursive-include skills *.md

@@ -10,7 +10,7 @@
 
 ```
 python3 scripts/check.py
-python3 -m unittest test_dayuan.py test_workbuddy_auth.py
+python3 -m unittest test_dayuan.py test_workbuddy_auth.py test_wecom_bridge.py
 ```
 
 <!-- 新增了哪些测试；哪些在改动前的代码上会失败。 -->

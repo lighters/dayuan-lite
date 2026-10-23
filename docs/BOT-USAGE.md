@@ -93,7 +93,7 @@ env -u DAYUAN_ACCESS_TOKEN "<PYTHON>" "<REPO>/dayuan.py" --state-dir "<STATE>" r
 
 ## 6. MCP 或长期复用
 
-支持 stdio MCP 的宿主可按 [MCP 接入说明](../README.md#接入-mcp) 配置 `dayuan_status`、`dayuan_read_start`、`dayuan_read_result`。两个读取工具支持 `wait_seconds`（最多 30 秒），服务端会按同一 ID 等待结果，`initialize` 也会把调用流程告诉宿主，Prompt 中无需再手写轮询步骤。MCP 进程必须在能访问授权状态目录的本机执行；不要为了云端宿主而复制凭据或公开暴露服务。
+支持 stdio MCP 的宿主可按 [MCP 接入说明](../README.md#接入-mcp) 配置能力检查、状态、群查询/结果/追问和企微读取工具。两个读取工具支持 `wait_seconds`（最多 30 秒），服务端会按同一 ID 等待结果，`initialize` 也会把调用流程告诉宿主，Prompt 中无需再手写轮询步骤。MCP 进程必须在能访问授权状态目录的本机执行；不要为了云端宿主而复制凭据或公开暴露服务。
 
 私有技能、固定工具配置属于长期接入，应在用户明确选择后再保存。技能内容只需记录调用方法与边界，不保存凭据，也不要将一次验收的群名、时间或 request_id 固化为默认查询。本文示例不会执行这些持久化操作。
 
@@ -142,3 +142,12 @@ wecom meeting-get --json '{"meeting_ids":[{"meeting_id":"<列表返回值>"}]}'
 先按明确范围搜索/列表，再用返回的标识读取；同名候选有歧义时让用户选择。邮件仅搜索和读取正文/附件元数据，微盘仅列表/搜索/元数据，不下载文件或附件。普通表格使用 `sheet-read` 和明确 A1 范围；智能表格精确选列用 `smartsheet-query` 的标题参数，不传 SQL。日程/邮件需要成对时间窗；分页只读取所需页，保留 `has_more`、邮件逐封失败、表格不可见单元格及截断提示。
 
 这些操作返回真实接口数据，不是 A2A 生成的聊天摘要；本次接入不表示扩大了账号权限，也没有延长 Bot 七天授权。新增领域的 CLI/MCP 验证见 [验证范围](VALIDATION.md)，尚未单独通过 Grok Bot 消费端复验。
+
+
+## 9. 统一安装、Skill 与追问
+
+优先使用仓库 `sh scripts/install.sh`（需要时加 `--with-wecom-cli`），再用安装后的 `dayuan setup` 生成 MCP 条目；同一命令加 `--skill-dir <客户端skills目录>` 可复制随包 `dayuan-readonly`，已有目录不覆盖。配置和 Skill 不含凭据；完整安装说明见 README。宿主使用同一状态目录与安装环境，不必自行拼接企微 CLI 或读取 token。
+
+先调 `dayuan_capabilities`（默认本地），确需在线检查时给 `online:true`。授权错误按 recovery 的命令恢复；不能把 doctor 成功或授权为 ready 当成业务查询验收。
+
+遇到 `input_required`，取得答案后用 `dayuan_read_reply`，例如 `{ "parent_request_id":"project-read-001", "request_id":"project-reply-001", "answer":"选择第一个候选群" }`。回复使用独立稳定 ID；等待或查询按回复 ID，下一轮澄清仍引用原查询 ID。不确定回复不重发、不换号；auth_required 走授权恢复。保持远端摘要与真实接口数据的来源差别。

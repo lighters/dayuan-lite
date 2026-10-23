@@ -28,3 +28,6 @@ py-modules = ["dayuan", "workbuddy_auth", "wecom_bridge"]
 
 [tool.setuptools.dynamic]
 version = {attr = "dayuan.__version__"}
+
+[tool.setuptools.data-files]
+"share/dayuan-lite/skills/dayuan-readonly" = ["skills/dayuan-readonly/SKILL.md", "skills/dayuan-readonly/references.md"]
